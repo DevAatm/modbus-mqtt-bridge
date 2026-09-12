@@ -1,0 +1,57 @@
+# Stack d'ESSAIS — ne pas utiliser en production (voir docker-compose.yml).
+#
+#   docker compose -f docker-compose.dev.yml --profile sim up --build
+#
+# 'sim' démarre un simulateur Modbus RTU relié au bridge par un port série
+# virtuel (socat over TCP). Sans le profil 'sim', le bridge attend un vrai
+# port série — non disponible dans Docker Desktop/Windows.
+#
+# MQTT anonyme sur localhost:1883, Home Assistant sur http://localhost:8123
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    depends_on:
+      - mosquitto
+    ports:
+      - "8123:8123"
+    volumes:
+      - ha-config:/config
+    restart: unless-stopped
+
+  modbus-sim:
+    profiles: ["sim"]
+    build:
+      context: .
+      target: dev
+    entrypoint: ["/bin/sh", "/app/tools/sim-entrypoint.sh"]
+
+  modbus-bridge:
+    profiles: ["sim"]
+    build:
+      context: .
+      target: dev
+    depends_on:
+      - mosquitto
+      - modbus-sim
+    entrypoint: ["/bin/sh", "/app/tools/bridge-sim-entrypoint.sh"]
+    volumes:
+      - ./profiles/sofar-esi-5k-s1.yaml:/etc/bridge/profile.yaml:ro
+    environment:
+      SERIAL_PORT: /tmp/rs485
+      MQTT_HOST: mosquitto
+      PROFILE: /etc/bridge/profile.yaml
+      # Essais d'écriture : passer à "false" pour autoriser les commandes.
+      READ_ONLY: "true"
+      LOG_LEVEL: DEBUG          # essais : on trace chaque cycle de poll
+      HEALTH_FILE: /tmp/bridge-health
+
+volumes:
+  ha-config:

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "modbus-mqtt-bridge"
+version = "0.1.0"
+description = "Passerelle Modbus RTU (RS485) <-> MQTT, pilotée par profil YAML."
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+    "pymodbus>=3.6",
+    "pyserial>=3.5",
+    "aiomqtt>=2.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "types-PyYAML",
+]
+
+[project.scripts]
+bridge = "bridge.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bridge"]
+
+# --- Qualité ---------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_any_generics = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# Les adaptateurs touchent des libs sans stubs complets.
+module = ["pymodbus.*", "aiomqtt.*", "serial.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

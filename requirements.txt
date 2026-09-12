@@ -1,0 +1,6 @@
+# Liste courte et fermée (cf. CLAUDE.md). Rien d'autre sans justification écrite.
+# Versions figées à faire au moment du premier build reproductible.
+pymodbus>=3.6
+pyserial>=3.5
+aiomqtt>=2.0
+PyYAML>=6.0

@@ -1,0 +1,58 @@
+device:
+  name: sofar-esi-5k-s1
+  protocol: modbus-g3-v1.35
+  slave_id: 1
+  serial: { baudrate: 9600, bytesize: 8, parity: N, stopbits: 1 }
+
+# Lectures groupées : un read par bloc, pas un par point.
+blocks:
+  - name: battery
+    address: 0x0604
+    count: 7
+    interval: 5s
+    points:
+      - { key: battery_voltage, offset: 0, type: u16, scale: 0.1, unit: V }
+      - { key: battery_current, offset: 1, type: s16, scale: 0.01, unit: A }
+      - { key: battery_power,   offset: 2, type: s16, scale: 10,   unit: W }
+      - { key: battery_temp,    offset: 3, type: s16, unit: "°C" }
+      - { key: battery_soc,     offset: 4, type: u16, unit: "%" }
+      - { key: battery_soh,     offset: 5, type: u16, unit: "%" }
+
+# Écritures : whitelist explicite. Ce qui n'est pas listé est interdit.
+writes:
+  - key: storage_mode
+    address: 0x1110
+    type: u16
+    mode: single
+    allowed: [0, 1, 2, 3]
+
+  - key: power_setpoint
+    address: 0x1187
+    count: 6            # écriture groupée obligatoire (fonction 0x10)
+    mode: block
+    layout:
+      # Mono-champ : `key` optionnel (défaut = clé d'écriture). Une commande
+      # scalaire suffit : publier `-2000` sur command/power_setpoint.
+      - { offset: 2, type: s16, scale: 10, min: -5000, max: 5000 }
+    preserve: true      # les offsets non listés sont relus et réécrits tels quels
+  - key: anti_reflux
+    address: 0x1023
+    count: 2
+    mode: block
+    preserve: false
+    layout:
+      - { key: mode,      offset: 0, type: u16, allowed: [0, 1, 2] }
+      - { key: threshold, offset: 1, type: u16, scale: 100, unit: W, min: 0, max: 6000 }
+      
+  # Exemple multi-champ : plusieurs offsets pilotés en une seule trame 0x10.
+  # Commande = objet JSON, ex: {"active": -2000, "reactive": 0}
+  # (offsets/types à adapter à la carte registre réelle du 5K).
+  #
+  # - key: power_control
+  #   address: 0x1187
+  #   count: 6
+  #   mode: block
+  #   preserve: true
+  #   layout:
+  #     - { key: active,   offset: 2, type: s16, scale: 10, min: -5000, max: 5000 }
+  #     - { key: reactive, offset: 3, type: s16, scale: 10, min: -5000, max: 5000 }

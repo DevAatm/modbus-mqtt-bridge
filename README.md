@@ -87,9 +87,4 @@ identifié par sa `key` dans `layout`, validé (min/max) et clampé indépendamm
 Qualité : `ruff` clean, `mypy --strict` clean, `pytest` 51 tests verts (aucun
 matériel/broker requis).
 
-### Reste à décider (non implémenté)
 
-Le **watchdog de pilotage** (CLAUDE.md §Sécurité 4 : réémission périodique
-d'une consigne + retour à un état sûr si le pilote se tait) n'est pas
-implémenté : il exige d'étendre le schéma de profil (quelle clé, période,
-valeur de repli). À spécifier avant codage plutôt qu'à deviner.

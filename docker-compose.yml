@@ -1,0 +1,31 @@
+services:
+  modbus-bridge:
+    build: .
+    devices:
+      # Toujours par by-id, jamais /dev/ttyUSB0 (ordre d'énumération instable).
+      - "/dev/serial/by-id/usb-FTDI_...-if00-port0:/dev/rs485"
+    volumes:
+      - ./profiles/sofar-esi-5k-s1.yaml:/etc/bridge/profile.yaml:ro
+    environment:
+      SERIAL_PORT: /dev/rs485
+      PROFILE: /etc/bridge/profile.yaml
+      READ_ONLY: "true"
+      LOG_LEVEL: INFO          # DEBUG pour tracer chaque cycle de poll
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      # Broker avec authentification : décommenter (ou via secrets/.env).
+      # MQTT_USERNAME: bridge
+      # MQTT_PASSWORD: "change-me"
+      # Préfixe des topics (défaut: modbus).
+      # MQTT_PREFIX: modbus
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-m", "bridge.healthcheck"]
+      interval: 60s
+    restart: unless-stopped

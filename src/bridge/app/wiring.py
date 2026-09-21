@@ -9,12 +9,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import assert_never
 
 from bridge.adapters.clock import SystemClock
-from bridge.adapters.modbus_rtu import PymodbusTransport
+from bridge.adapters.modbus import PymodbusTransport, open_serial, open_tcp
 from bridge.adapters.mqtt import MqttPublisher
 from bridge.adapters.profile_yaml import load_profile
-from bridge.app.config import Config
+from bridge.app.config import Config, SerialEndpoint, TcpEndpoint
 from bridge.app.dispatcher import BusDispatcher
 from bridge.app.poller import Poller
 from bridge.domain.commands import WriteCommand, validate
@@ -40,7 +41,7 @@ async def run(config: Config) -> None:
     if config.read_only:
         _log.warning("service en LECTURE SEULE (READ_ONLY) : toute écriture sera refusée")
 
-    transport = PymodbusTransport(config.serial_port, profile.serial, profile.slave_id)
+    transport = _make_transport(config, profile)
     publisher = MqttPublisher(
         config.mqtt_host,
         device,
@@ -52,7 +53,7 @@ async def run(config: Config) -> None:
     clock = SystemClock()
 
     await transport.connect()
-    _log.info("bus série connecté sur %s (slave %d)", config.serial_port, profile.slave_id.value)
+    _log.info("équipement connecté via %s (slave %d)", transport, profile.slave_id.value)
     try:
         await publisher.connect()
         _log.info(
@@ -75,6 +76,27 @@ async def run(config: Config) -> None:
             await publisher.close()  # publie offline
     finally:
         await transport.close()
+
+
+def _make_transport(config: Config, profile: DeviceProfile) -> PymodbusTransport:
+    """Choisit le lien. Le reste du service ne voit qu'un `ModbusTransport`.
+
+    L'invariant mono-maître vaut pour les deux liens : en TCP l'équipement
+    n'accepte souvent qu'une ou deux sockets, et derrière une passerelle le
+    RS485 reste half-duplex. Le dispatcher sérialise donc dans tous les cas.
+    """
+    endpoint = config.endpoint
+    if isinstance(endpoint, SerialEndpoint):
+        return open_serial(endpoint.port, profile.serial, profile.slave_id)
+    if isinstance(endpoint, TcpEndpoint):
+        return open_tcp(
+            endpoint.host,
+            endpoint.port,
+            endpoint.framing,
+            profile.slave_id,
+            timeout_s=endpoint.timeout_s,
+        )
+    assert_never(endpoint)  # exhaustivité vérifiée par mypy
 
 
 def _device_id(profile: DeviceProfile) -> DeviceId:

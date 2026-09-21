@@ -7,6 +7,9 @@ services:
     volumes:
       - ./profiles/sofar-esi-5k-s1.yaml:/etc/bridge/profile.yaml:ro
     environment:
+      # Lien série (défaut). Pour un équipement atteint par le réseau, voir le
+      # service commenté `modbus-bridge-tcp` en bas de ce fichier.
+      MODBUS_TRANSPORT: serial
       SERIAL_PORT: /dev/rs485
       PROFILE: /etc/bridge/profile.yaml
       READ_ONLY: "true"
@@ -29,3 +32,38 @@ services:
       test: ["CMD", "python", "-m", "bridge.healthcheck"]
       interval: 60s
     restart: unless-stopped
+
+# --- Variante lien TCP -------------------------------------------------------
+# Même image, même profil : seul le lien change. Ni `devices:` ni groupe
+# dialout — le conteneur n'est plus qu'un client réseau.
+#
+# MODBUS_FRAMING n'est pas devinable : 'socket' pour un équipement Modbus TCP
+# natif (en-tête MBAP), 'rtu' pour une passerelle transparente TCP<->RS485
+# (Waveshare, Elfin, USR...) qui encapsule des trames RTU. Un mauvais choix ne
+# donne pas de valeurs fausses, il donne des timeouts.
+#
+# ATTENTION : Modbus TCP n'a aucune authentification. En série, l'accès
+# physique faisait barrière ; sur le réseau, il faut un VLAN/segment isolé.
+#
+#  modbus-bridge-tcp:
+#    build: .
+#    volumes:
+#      - ./profiles/sofar-esi-5k-s1.yaml:/etc/bridge/profile.yaml:ro
+#    environment:
+#      MODBUS_TRANSPORT: tcp
+#      MODBUS_HOST: 192.168.1.50
+#      MODBUS_PORT: "502"
+#      MODBUS_FRAMING: socket   # ou 'rtu' derrière une passerelle RS485
+#      MODBUS_TIMEOUT: "3"      # secondes ; la latence réseau n'est pas le 3.5T du RTU
+#      PROFILE: /etc/bridge/profile.yaml
+#      READ_ONLY: "true"
+#      MQTT_HOST: mosquitto
+#    mem_limit: 128m
+#    cpus: 0.25
+#    logging:
+#      driver: json-file
+#      options: { max-size: "10m", max-file: "3" }
+#    healthcheck:
+#      test: ["CMD", "python", "-m", "bridge.healthcheck"]
+#      interval: 60s
+#    restart: unless-stopped

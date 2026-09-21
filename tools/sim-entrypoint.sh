@@ -14,4 +14,4 @@ while [ ! -e "$PTY" ]; do
   sleep 0.1
 done
 
-exec python -m tools.modbus_sim "$PTY"
+exec python -m tools.modbus_sim serial "$PTY"

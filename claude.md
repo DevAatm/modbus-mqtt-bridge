@@ -27,6 +27,9 @@ Corollaires :
 - Les écritures s'intercalent **entre** deux cycles de poll, pas pendant.
 - Si le déploiement expose aussi un dongle WiFi constructeur, c'est un
   second maître potentiel : le documenter, pas l'ignorer.
+- L'invariant vaut aussi sur un lien **Modbus TCP** : un équipement n'accepte
+  souvent qu'une ou deux sockets, et derrière une passerelle TCP<->RS485 le bus
+  reste half-duplex. Le dispatcher sérialise dans tous les cas.
 
 ---
 
@@ -47,7 +50,7 @@ src/<pkg>/
     publisher.py   #   MessagePublisher
     clock.py       #   Clock
   adapters/
-    modbus_rtu.py  #   pymodbus -> ModbusTransport
+    modbus.py      #   pymodbus -> ModbusTransport (série RTU ou TCP)
     mqtt.py        #   MQTT -> MessagePublisher + souscription commandes
     profile_yaml.py#   YAML -> domain.profile
   app/
@@ -68,6 +71,40 @@ Règles :
 
 Si un test a besoin d'un vrai port série ou d'un vrai broker, c'est que
 la frontière est au mauvais endroit.
+
+### Lien série ou TCP
+
+Le même équipement peut être câblé en RS485 ou atteint par le réseau. Lire un
+registre est la même opération dans les deux cas : `ModbusTransport` ignore le
+lien, et l'adaptateur `modbus.py` expose deux fabriques (`open_serial`,
+`open_tcp`). Le domaine, le poller et le dispatcher ne changent pas.
+
+Le lien est un choix de **déploiement**, pas une propriété de l'équipement :
+il vit dans l'environnement (`MODBUS_TRANSPORT`), jamais dans le profil. Un
+même profil sert les deux câblages.
+
+`MODBUS_FRAMING` n'est pas devinable et n'a pas de défaut raisonnable au-delà
+du cas courant :
+
+- `socket` — équipement Modbus TCP natif (en-tête MBAP) ;
+- `rtu` — passerelle transparente TCP<->RS485 (Waveshare, Elfin, USR...) qui
+  encapsule des trames RTU.
+
+Un mauvais framing ne produit pas de valeurs fausses, il produit des timeouts.
+
+Propre au TCP :
+
+- **La coupure remplace le timeout.** Le lien tombe (Wi-Fi, reboot de la
+  passerelle, bail DHCP). La reconnexion est déléguée à pymodbus (backoff
+  borné) ; le service ne meurt pas, ses lectures échouent jusqu'au
+  rétablissement, et l'`availability` MQTT bascule à `offline` après N échecs
+  consécutifs.
+- **Aucune écriture n'est rejouée.** Une lecture peut être retentée, une
+  écriture non : sous `preserve`, les registres relus peuvent être périmés.
+  Échec = `failed` acquitté, le pilote redemande.
+- **Aucune authentification.** En série, l'accès physique faisait barrière.
+  Sur le réseau, il n'y a rien : segment/VLAN isolé obligatoire, et
+  `read_only` reste le garde-fou applicatif.
 
 ---
 

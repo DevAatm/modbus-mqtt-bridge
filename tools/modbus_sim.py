@@ -1,10 +1,16 @@
-"""Simulateur Modbus RTU pour les essais — HORS produit, jamais dans l'image runtime.
+"""Simulateur Modbus pour les essais — HORS produit, jamais dans l'image runtime.
 
 Sert le bloc `battery` du profil de référence (0x0604, 7 registres) avec des
 valeurs plausibles, et ouvre en écriture la zone des consignes (0x1100..0x11FF)
 pour tester storage_mode (0x1110) et power_setpoint (0x1187, bloc 0x10).
 
-Usage : python -m tools.modbus_sim <port_série>
+Usage :
+    python -m tools.modbus_sim serial <port_série>
+    python -m tools.modbus_sim tcp <port> [--framing socket|rtu]
+
+Les deux framings TCP sont simulables : `socket` imite un équipement Modbus TCP
+natif, `rtu` une passerelle transparente TCP<->RS485. C'est le seul moyen de
+vérifier sans matériel que le bridge parle au bon dialecte.
 
 NB: API pymodbus 3.15 (SimData/SimDevice). Valeurs statiques — l'objectif est
 de valider la chaîne lecture/écriture, pas de rejouer une dynamique batterie.
@@ -12,12 +18,12 @@ de valider la chaîne lecture/écriture, pas de rejouer une dynamique batterie.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
-import sys
 
 from pymodbus.framer import FramerType
-from pymodbus.server import StartAsyncSerialServer
+from pymodbus.server import StartAsyncSerialServer, StartAsyncTcpServer
 from pymodbus.simulator import SimData, SimDevice
 from pymodbus.simulator.simdata import DataType
 
@@ -43,7 +49,7 @@ def _build_device() -> SimDevice:
     return SimDevice(id=SLAVE_ID, simdata=[_BATTERY, _SETPOINTS])
 
 
-async def main(port: str) -> None:
+async def serve_serial(port: str) -> None:
     _log.info("simulateur Modbus RTU sur %s (slave %d)", port, SLAVE_ID)
     await StartAsyncSerialServer(
         _build_device(),
@@ -56,8 +62,30 @@ async def main(port: str) -> None:
     )
 
 
+async def serve_tcp(port: int, framing: str) -> None:
+    framer = FramerType.RTU if framing == "rtu" else FramerType.SOCKET
+    _log.info("simulateur Modbus TCP sur :%d framing=%s (slave %d)", port, framing, SLAVE_ID)
+    await StartAsyncTcpServer(
+        _build_device(),
+        framer=framer,
+        address=("0.0.0.0", port),  # conteneur d'essai uniquement
+    )
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="link", required=True)
+    serial = sub.add_parser("serial", help="serveur RTU sur port série")
+    serial.add_argument("port", help="chemin du port série (ou PTY)")
+    tcp = sub.add_parser("tcp", help="serveur TCP")
+    tcp.add_argument("port", type=int, help="port d'écoute")
+    tcp.add_argument("--framing", choices=("socket", "rtu"), default="socket")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("usage: python -m tools.modbus_sim <port_série>", file=sys.stderr)
-        raise SystemExit(2)
-    asyncio.run(main(sys.argv[1]))
+    args = _parse_args()
+    if args.link == "serial":
+        asyncio.run(serve_serial(args.port))
+    else:
+        asyncio.run(serve_tcp(args.port, args.framing))

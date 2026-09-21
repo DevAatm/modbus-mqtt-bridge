@@ -1,7 +1,9 @@
-"""Port transport Modbus. L'adaptateur `modbus_rtu` l'implémente.
+"""Port transport Modbus. L'adaptateur `modbus` l'implémente (série RTU ou TCP).
 
 Le propriétaire du bus (poller/dispatcher) est le SEUL à appeler ces méthodes.
-Un adaptateur convertit les exceptions pymodbus en `Result`.
+Un adaptateur convertit les exceptions pymodbus en `Result`. Le port ignore
+délibérément le lien : lire un registre est la même opération sur RS485 et sur
+une socket, et c'est ce qui permet d'ajouter un lien sans toucher au domaine.
 """
 
 from __future__ import annotations

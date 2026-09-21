@@ -29,6 +29,7 @@ class Poller:
         publisher: MessagePublisher,
         clock: Clock,
         health_file: str,
+        failures_before_offline: int = 3,
     ) -> None:
         self._profile = profile
         self._dispatcher = dispatcher
@@ -37,6 +38,13 @@ class Poller:
         self._health_file = Path(health_file)
         # Blocs déjà lus avec succès au moins une fois (log INFO -> DEBUG ensuite).
         self._logged_blocks: set[str] = set()
+        # Disponibilité : le publisher a publié `online` à la connexion MQTT.
+        # Une coupure du lien (câble arraché, passerelle TCP injoignable) doit
+        # basculer l'availability, sinon HA affiche des valeurs figées comme si
+        # elles étaient fraîches. Un seuil évite de battre sur un timeout isolé.
+        self._failures_before_offline = max(1, failures_before_offline)
+        self._consecutive_failures = 0
+        self._available = True
 
     async def run(self) -> None:
         """Boucle principale. Annulable (propage CancelledError)."""
@@ -66,8 +74,10 @@ class Poller:
         if isinstance(result, Err):
             # Pas de valeur -> on ne publie rien, on ne touche pas la santé.
             _log.warning("lecture bloc %s échouée: %s", block.name, result.error)
+            await self._record_failure()
             return
 
+        await self._record_success()
         registers = result.value
         published = 0
         for point in block.points:
@@ -87,6 +97,23 @@ class Poller:
             _log.debug("bloc %s: %d point(s) publié(s)", block.name, published)
 
         self._touch_health()
+
+    async def _record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._available and self._consecutive_failures >= self._failures_before_offline:
+            self._available = False
+            _log.error(
+                "équipement injoignable (%d lectures consécutives en échec): availability=offline",
+                self._consecutive_failures,
+            )
+            await self._publisher.publish_availability(False)
+
+    async def _record_success(self) -> None:
+        self._consecutive_failures = 0
+        if not self._available:
+            self._available = True
+            _log.info("équipement de nouveau joignable: availability=online")
+            await self._publisher.publish_availability(True)
 
     def _touch_health(self) -> None:
         """Écrit un horodatage; testé par bridge.healthcheck."""

@@ -92,6 +92,40 @@ async def test_read_error_publishes_nothing_and_skips_health(tmp_path: Path) -> 
     assert not health.exists()
 
 
+async def test_repeated_failures_publish_offline_then_online(tmp_path: Path) -> None:
+    """Lien coupé (câble, passerelle TCP injoignable) : HA doit le voir.
+
+    Sans ça, les valeurs retain restent affichées comme si elles étaient
+    fraîches. Un seuil évite de battre sur un timeout isolé.
+    """
+    from bridge.ports.transport import ModbusError
+
+    transport = FakeTransport()
+    for _ in range(3):
+        transport.script_read_error(ModbusError("timeout", "pas de réponse"))
+    transport.script_read((500, 0xFF9C, 0, 0, 0, 0, 0))
+    publisher = FakePublisher()
+    profile = _profile()
+    poller = Poller(
+        profile,
+        BusDispatcher(transport, publisher),
+        publisher,
+        FakeClock(),
+        str(tmp_path / "h"),
+        failures_before_offline=3,
+    )
+
+    await poller._poll_block(profile.blocks[0])
+    await poller._poll_block(profile.blocks[0])
+    assert publisher.availability == []  # sous le seuil : on ne bat pas
+
+    await poller._poll_block(profile.blocks[0])
+    assert publisher.availability == [False]
+
+    await poller._poll_block(profile.blocks[0])
+    assert publisher.availability == [False, True]  # rétabli, publié une fois
+
+
 async def test_write_is_serialized_after_read(tmp_path: Path) -> None:
     transport = FakeTransport()
     transport.script_read((0, 0, 0, 0, 0, 0, 0))  # poll du bloc battery

@@ -6,6 +6,13 @@
 # virtuel (socat over TCP). Sans le profil 'sim', le bridge attend un vrai
 # port série — non disponible dans Docker Desktop/Windows.
 #
+# 'sim-tcp' fait la même chose sur un lien Modbus TCP : ni socat ni PTY, le
+# bridge ouvre une socket. Changer MODBUS_FRAMING + --framing (des deux côtés,
+# ils doivent correspondre) pour simuler soit un équipement TCP natif
+# ('socket'), soit une passerelle transparente TCP<->RS485 ('rtu').
+#
+#   docker compose -f docker-compose.dev.yml --profile sim-tcp up --build
+#
 # MQTT anonyme sur localhost:1883, Home Assistant sur http://localhost:8123
 
 services:
@@ -51,6 +58,37 @@ services:
       # Essais d'écriture : passer à "false" pour autoriser les commandes.
       READ_ONLY: "true"
       LOG_LEVEL: DEBUG          # essais : on trace chaque cycle de poll
+      HEALTH_FILE: /tmp/bridge-health
+
+  # --- Variante lien TCP -----------------------------------------------------
+  modbus-sim-tcp:
+    profiles: ["sim-tcp"]
+    build:
+      context: .
+      target: dev
+    command: ["python", "-m", "tools.modbus_sim", "tcp", "5020", "--framing", "socket"]
+
+  modbus-bridge-tcp:
+    profiles: ["sim-tcp"]
+    build:
+      # Lien TCP : ni socat ni PTY, donc l'image de production suffit telle quelle.
+      context: .
+      target: runtime
+    depends_on:
+      - mosquitto
+      - modbus-sim-tcp
+    volumes:
+      - ./profiles/sofar-esi-5k-s1.yaml:/etc/bridge/profile.yaml:ro
+    environment:
+      MODBUS_TRANSPORT: tcp
+      MODBUS_HOST: modbus-sim-tcp
+      MODBUS_PORT: "5020"
+      # 'socket' = équipement TCP natif ; 'rtu' = passerelle transparente.
+      MODBUS_FRAMING: socket
+      MQTT_HOST: mosquitto
+      PROFILE: /etc/bridge/profile.yaml
+      READ_ONLY: "true"
+      LOG_LEVEL: DEBUG
       HEALTH_FILE: /tmp/bridge-health
 
 volumes:

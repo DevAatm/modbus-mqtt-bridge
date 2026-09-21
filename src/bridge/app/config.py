@@ -11,9 +11,15 @@ import os
 from dataclasses import dataclass
 from typing import Literal, get_args
 
-# `socket` = Modbus TCP natif (en-tête MBAP).
-# `rtu`    = passerelle transparente TCP<->RS485 (trames RTU encapsulées).
-TcpFraming = Literal["socket", "rtu"]
+# `socket`      = Modbus TCP natif (en-tête MBAP), port 502 d'usage.
+# `rtu`         = passerelle transparente TCP<->RS485 (trames RTU brutes).
+# `solarman_v5` = logger Sofar/Solarman (LSW-3, LSE-3), port 8899, trames RTU
+#                 encapsulées dans un datagramme propriétaire préfixé du
+#                 numéro de série du logger.
+TcpFraming = Literal["socket", "rtu", "solarman_v5"]
+
+# Port d'usage par framing : un logger Solarman n'écoute jamais sur 502.
+_DEFAULT_PORTS: dict[str, int] = {"socket": 502, "rtu": 502, "solarman_v5": 8899}
 
 _FRAMINGS: frozenset[str] = frozenset(get_args(TcpFraming))
 
@@ -36,6 +42,9 @@ class TcpEndpoint:
     port: int
     framing: TcpFraming
     timeout_s: float
+    # Requis par `solarman_v5` uniquement : le logger n'accepte que les trames
+    # portant son propre numéro de série. `None` pour les autres framings.
+    logger_serial: int | None = None
 
     def __str__(self) -> str:
         return f"tcp {self.host}:{self.port} ({self.framing})"
@@ -85,15 +94,46 @@ def _endpoint_from_env() -> ModbusEndpoint:
             raise ConfigError(
                 f"MODBUS_FRAMING invalide: {framing!r} (attendu {sorted(_FRAMINGS)}) — "
                 "'socket' pour un équipement Modbus TCP natif, "
-                "'rtu' pour une passerelle transparente TCP<->RS485"
+                "'rtu' pour une passerelle transparente TCP<->RS485, "
+                "'solarman_v5' pour un logger Sofar/Solarman (LSW-3, LSE-3)"
             )
         return TcpEndpoint(
             host=_require("MODBUS_HOST", because="MODBUS_TRANSPORT=tcp"),
-            port=_int("MODBUS_PORT", 502),
+            port=_int("MODBUS_PORT", _DEFAULT_PORTS[framing]),
             framing=framing,  # type: ignore[arg-type]  # validé ci-dessus
             timeout_s=_float("MODBUS_TIMEOUT", 3.0),
+            logger_serial=_logger_serial(framing),
         )
     raise ConfigError(f"MODBUS_TRANSPORT invalide: {kind!r} (attendu 'serial' ou 'tcp')")
+
+
+def _logger_serial(framing: str) -> int | None:
+    """Numéro de série du logger : requis par solarman_v5, interdit ailleurs.
+
+    Il est imprimé sur l'étiquette du logger et visible dans son interface web.
+    Accepté en décimal ou en hexadécimal (`0x...`).
+    """
+    raw = os.environ.get("MODBUS_LOGGER_SERIAL", "").strip()
+    if framing != "solarman_v5":
+        if raw:
+            raise ConfigError(
+                f"MODBUS_LOGGER_SERIAL ne s'applique qu'à MODBUS_FRAMING=solarman_v5 "
+                f"(framing courant: {framing})"
+            )
+        return None
+    if not raw:
+        raise ConfigError(
+            "variable d'environnement requise manquante: MODBUS_LOGGER_SERIAL "
+            "(MODBUS_FRAMING=solarman_v5) — numéro de série du logger, "
+            "sur son étiquette ou dans son interface web"
+        )
+    try:
+        serial = int(raw, 0)
+    except ValueError:
+        raise ConfigError(f"MODBUS_LOGGER_SERIAL: entier attendu, reçu {raw!r}") from None
+    if not 0 < serial <= 0xFFFFFFFF:
+        raise ConfigError(f"MODBUS_LOGGER_SERIAL hors bornes (u32): {serial}")
+    return serial
 
 
 def _require(name: str, *, because: str | None = None) -> str:

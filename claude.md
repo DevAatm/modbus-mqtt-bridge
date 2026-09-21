@@ -51,6 +51,7 @@ src/<pkg>/
     clock.py       #   Clock
   adapters/
     modbus.py      #   pymodbus -> ModbusTransport (série RTU ou TCP)
+    solarman_v5.py #   framer Solarman V5 (loggers LSW-3/LSE-3)
     mqtt.py        #   MQTT -> MessagePublisher + souscription commandes
     profile_yaml.py#   YAML -> domain.profile
   app/
@@ -88,7 +89,15 @@ du cas courant :
 
 - `socket` — équipement Modbus TCP natif (en-tête MBAP) ;
 - `rtu` — passerelle transparente TCP<->RS485 (Waveshare, Elfin, USR...) qui
-  encapsule des trames RTU.
+  encapsule des trames RTU ;
+- `solarman_v5` — logger Sofar/Solarman (LSW-3, LSE-3) sur le port 8899. Pas
+  du Modbus TCP : datagramme propriétaire préfixé du numéro de série du
+  logger (`MODBUS_LOGGER_SERIAL`), contenant une trame RTU complète. Protocole
+  non documenté par le constructeur, décrit par rétro-ingénierie — les valeurs
+  doivent être confrontées à l'affichage de l'équipement avant d'être figées.
+  Attention : ce logger est aussi le lien du constructeur vers son cloud. Le
+  laisser en service tout en l'interrogeant, c'est accepter qu'il parle au bus
+  quand il veut.
 
 Un mauvais framing ne produit pas de valeurs fausses, il produit des timeouts.
 

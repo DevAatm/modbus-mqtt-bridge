@@ -94,6 +94,7 @@ def _make_transport(config: Config, profile: DeviceProfile) -> PymodbusTransport
             endpoint.port,
             endpoint.framing,
             profile.slave_id,
+            logger_serial=endpoint.logger_serial,
             timeout_s=endpoint.timeout_s,
         )
     assert_never(endpoint)  # exhaustivité vérifiée par mypy

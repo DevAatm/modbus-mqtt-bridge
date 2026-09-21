@@ -8,9 +8,11 @@ Le protocole applicatif (fonctions 0x03/0x06/0x10, registres, `slave_id`) est
 identique sur les deux liens : seule l'ADU change (CRC en RTU, en-tête MBAP en
 TCP). D'où une seule implémentation, deux fabriques de client.
 
-Attention : `tcp` recouvre deux matériels différents.
-  - équipement Modbus TCP natif        -> framing `socket` (en-tête MBAP) ;
-  - passerelle transparente TCP<->RS485 -> framing `rtu` (trames RTU encapsulées).
+Attention : `tcp` recouvre trois matériels différents.
+  - équipement Modbus TCP natif         -> framing `socket` (en-tête MBAP) ;
+  - passerelle transparente TCP<->RS485 -> framing `rtu` (trames RTU brutes) ;
+  - logger Sofar/Solarman (LSW-3/LSE-3) -> framing `solarman_v5` (port 8899,
+    trames RTU encapsulées dans un datagramme propriétaire).
 Un mauvais framing ne produit pas de valeurs fausses, il produit des timeouts.
 Le choix est explicite dans la configuration, jamais deviné au runtime.
 """
@@ -23,8 +25,9 @@ from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 from pymodbus.client.base import ModbusBaseClient
 from pymodbus.exceptions import ModbusException
 from pymodbus.framer import FramerType
-from pymodbus.pdu import ExceptionResponse
+from pymodbus.pdu import DecodePDU, ExceptionResponse
 
+from bridge.adapters.solarman_v5 import SolarmanV5Framer
 from bridge.domain.profile import SerialSettings
 from bridge.domain.result import Err, Ok, Result
 from bridge.domain.values import RegisterAddress, SlaveId
@@ -44,6 +47,9 @@ _EXCEPTION_KINDS: dict[int, str] = {
 _FRAMERS: dict[str, FramerType] = {
     "socket": FramerType.SOCKET,  # Modbus TCP natif
     "rtu": FramerType.RTU,  # passerelle transparente TCP<->RS485
+    # Solarman V5 encapsule des trames RTU : on construit le client en RTU,
+    # puis on substitue le framer (cf. open_tcp).
+    "solarman_v5": FramerType.RTU,
 }
 
 
@@ -127,6 +133,7 @@ def open_tcp(
     framing: str,
     slave_id: SlaveId,
     *,
+    logger_serial: int | None = None,
     timeout_s: float = 3.0,
     reconnect_delay_s: float = 1.0,
     reconnect_delay_max_s: float = 60.0,
@@ -149,6 +156,13 @@ def open_tcp(
         reconnect_delay=reconnect_delay_s,
         reconnect_delay_max=reconnect_delay_max_s,
     )
+    if framing == "solarman_v5":
+        if logger_serial is None:
+            raise ValueError("framing solarman_v5: numéro de série du logger requis")
+        # pymodbus n'accepte que ses framers connus à la construction ; le
+        # nôtre est posé ensuite sur le gestionnaire de transactions. C'est le
+        # seul point où l'on touche à l'intérieur de la bibliothèque.
+        client.ctx.framer = SolarmanV5Framer(DecodePDU(False), logger_serial)
     return PymodbusTransport(client, slave_id, f"tcp {host}:{port} ({framing})")
 
 

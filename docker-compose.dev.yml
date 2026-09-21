@@ -91,5 +91,38 @@ services:
       LOG_LEVEL: DEBUG
       HEALTH_FILE: /tmp/bridge-health
 
+  # --- Variante logger Solarman V5 -------------------------------------------
+  # Le simulateur n'imite que l'enveloppe : il la désencapsule et relaie la
+  # trame RTU à un vrai serveur Modbus interne. Valide l'intégration, pas le
+  # format réel attendu par un LSW-3/LSE-3 physique.
+  modbus-sim-solarman:
+    profiles: ["sim-solarman"]
+    build:
+      context: .
+      target: dev
+    command: ["python", "-m", "tools.modbus_sim", "solarman", "8899", "--serial", "1234567890"]
+
+  modbus-bridge-solarman:
+    profiles: ["sim-solarman"]
+    build:
+      context: .
+      target: runtime
+    depends_on:
+      - mosquitto
+      - modbus-sim-solarman
+    volumes:
+      - ./profiles/sofar-esi-5k-s1.yaml:/etc/bridge/profile.yaml:ro
+    environment:
+      MODBUS_TRANSPORT: tcp
+      MODBUS_HOST: modbus-sim-solarman
+      MODBUS_FRAMING: solarman_v5
+      # Port 8899 par défaut avec ce framing : inutile de le répéter.
+      MODBUS_LOGGER_SERIAL: "1234567890"
+      MQTT_HOST: mosquitto
+      PROFILE: /etc/bridge/profile.yaml
+      READ_ONLY: "true"
+      LOG_LEVEL: DEBUG
+      HEALTH_FILE: /tmp/bridge-health
+
 volumes:
   ha-config:

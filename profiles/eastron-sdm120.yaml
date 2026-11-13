@@ -1,0 +1,37 @@
+# Compteur monophasé Eastron SDM120-Modbus.
+# Mesures en registres d'ENTRÉE (fonction 0x04), flottants IEEE 754 32 bits,
+# mot de poids fort en premier, sans facteur d'échelle. Aucune écriture.
+device:
+  name: eastron-sdm120
+  protocol: modbus-eastron-sdm
+  slave_id: 1
+  serial: { baudrate: 2400, bytesize: 8, parity: N, stopbits: 1 }
+blocks:
+  - name: instant
+    function: input
+    address: 0x0000
+    count: 32
+    interval: 5s
+    points:
+      - { key: voltage,        offset: 0,  type: f32, unit: V }
+      - { key: current,        offset: 6,  type: f32, unit: A }
+      - { key: power,          offset: 12, type: f32, unit: W }
+      - { key: apparent_power, offset: 18, type: f32, unit: VA }
+      - { key: reactive_power, offset: 24, type: f32, unit: var }
+      - { key: power_factor,   offset: 30, type: f32 }
+  - name: energy
+    function: input
+    address: 0x0046
+    count: 6
+    interval: 60s
+    points:
+      - { key: frequency,     offset: 0, type: f32, unit: Hz }
+      - { key: import_energy, offset: 2, type: f32, unit: kWh }
+      - { key: export_energy, offset: 4, type: f32, unit: kWh }
+  - name: total
+    function: input
+    address: 0x0156
+    count: 2
+    interval: 60s
+    points:
+      - { key: total_energy, offset: 0, type: f32, unit: kWh }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from bridge.domain.profile import (
     DeviceProfile,
     LayoutSpec,
     PointSpec,
+    RegisterTable,
     SerialSettings,
     WriteMode,
     WriteSpec,
@@ -141,3 +143,55 @@ async def test_write_is_serialized_after_read(tmp_path: Path) -> None:
 
     # La lecture du poll précède toute écriture : aucune écriture pendant le poll.
     assert transport.ops == ["read", "read", "write"]
+    # Poll du bloc (holding par défaut) puis relecture preserve, toujours en holding.
+    assert transport.read_tables == [RegisterTable.HOLDING, RegisterTable.HOLDING]
+
+
+def _meter_block() -> BlockSpec:
+    return BlockSpec(
+        name="instant",
+        address=RegisterAddress(0x0000),
+        count=4,
+        interval=timedelta(seconds=5),
+        points=(
+            PointSpec("voltage", 0, "f32", unit="V"),
+            PointSpec("power", 2, "f32", unit="W"),
+        ),
+        function=RegisterTable.INPUT,
+    )
+
+
+async def test_input_block_reads_input_table_and_decodes_f32(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    transport.script_read((0x4366, 0x0000, 0xC366, 0x0000))  # 230.0 V, -230.0 W
+    publisher = FakePublisher()
+    poller = Poller(
+        _profile(), BusDispatcher(transport, publisher), publisher, FakeClock(), str(tmp_path / "h")
+    )
+
+    await poller._poll_block(_meter_block())
+
+    assert transport.read_tables == [RegisterTable.INPUT]
+    assert publisher.states == [("voltage", 230.0, "V"), ("power", -230.0, "W")]
+
+
+async def test_nan_point_not_published_and_warned(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    transport = FakeTransport()
+    transport.script_read((0x7FC0, 0x0000, 0xC366, 0x0000))  # NaN, -230.0 W
+    publisher = FakePublisher()
+    health = tmp_path / "h"
+    poller = Poller(
+        _profile(), BusDispatcher(transport, publisher), publisher, FakeClock(), str(health)
+    )
+
+    with caplog.at_level(logging.WARNING, logger="bridge.app.poller"):
+        await poller._poll_block(_meter_block())
+
+    # Le NaN n'est ni publié ni converti en zéro ; le point voisin l'est.
+    assert publisher.states == [("power", -230.0, "W")]
+    nan_logs = [r for r in caplog.records if "voltage" in r.getMessage()]
+    assert [r.levelno for r in nan_logs] == [logging.WARNING]
+    # La lecture a réussi : la santé est à jour.
+    assert health.exists()

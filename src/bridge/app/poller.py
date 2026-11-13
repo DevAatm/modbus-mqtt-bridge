@@ -70,7 +70,7 @@ class Poller:
             await self._clock.sleep(sleep_for)
 
     async def _poll_block(self, block: BlockSpec) -> None:
-        result = await self._dispatcher.read_holding(block.address, block.count)
+        result = await self._dispatcher.read_registers(block.function, block.address, block.count)
         if isinstance(result, Err):
             # Pas de valeur -> on ne publie rien, on ne touche pas la santé.
             _log.warning("lecture bloc %s échouée: %s", block.name, result.error)
@@ -85,6 +85,10 @@ class Poller:
             if isinstance(decoded, Ok):
                 await self._publisher.publish_state(point.key, decoded.value.value, point.unit)
                 published += 1
+            elif decoded.error.kind == "non_finite":
+                # Valeur indisponible côté équipement (NaN/inf) : rien n'est
+                # publié, la dernière valeur retenue reste celle de HA.
+                _log.warning("point %s non publié: %s", point.key, decoded.error)
             else:
                 _log.error("décodage %s échoué: %s", point.key, decoded.error)
 

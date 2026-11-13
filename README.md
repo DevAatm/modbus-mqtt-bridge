@@ -82,6 +82,70 @@ elles étaient fraîches. Aucune écriture n'est rejouée après une coupure.
 barrière ; sur le réseau, il faut un VLAN/segment isolé. `READ_ONLY=true`
 (défaut) reste le garde-fou applicatif.
 
+## Profils d'équipement
+
+Un profil décrit l'équipement : blocs de lecture groupée, points décodés, et
+whitelist d'écriture. Il est validé au démarrage ; toute incohérence lève
+`ProfileError` et le service ne démarre pas. Exemples : `profiles/sofar-esi-5k-s1.yaml`
+(onduleur, holding, entiers mis à l'échelle), `profiles/eastron-sdm120.yaml`
+(compteur, registres d'entrée, flottants).
+
+### Bloc
+
+| Champ      | Requis | Description |
+|------------|--------|-------------|
+| `name`     | oui    | Nom du bloc (logs). |
+| `function` | non    | Table Modbus lue : `holding` (fonction 0x03, **défaut**) ou `input` (fonction 0x04). Toute autre valeur est rejetée. |
+| `address`  | oui    | Premier registre (`0x0604` ou décimal). |
+| `count`    | oui    | Nombre de registres lus en une requête. |
+| `interval` | oui    | Période de lecture (`500ms`, `5s`, `1m`, `1h`). |
+| `points`   | oui    | Liste non vide de points. |
+
+Un profil sans `function` lit en holding, comme avant l'introduction du champ.
+Les registres d'entrée sont en lecture seule côté Modbus : `function` ne
+concerne que les blocs de lecture, les écritures visent toujours les holding.
+
+```yaml
+blocks:
+  - name: instant
+    function: input      # compteurs Eastron SDM : mesures en 0x04
+    address: 0x0000
+    count: 32
+    interval: 5s
+    points:
+      - { key: voltage, offset: 0, type: f32, unit: V }
+```
+
+### Point
+
+| Champ        | Requis | Description |
+|--------------|--------|-------------|
+| `key`        | oui    | Identifiant, unique dans le profil ; donne le topic `state/<key>`. |
+| `offset`     | oui    | Position dans le bloc ; `offset` + largeur du type doit tenir dans `count`. |
+| `type`       | oui    | Voir ci-dessous. |
+| `scale`      | non    | Multiplicateur appliqué à la valeur brute (défaut `1`). |
+| `unit`       | non    | Unité publiée. |
+| `word_order` | non    | Types 32 bits : `big` (mot de poids fort en premier, **défaut**) ou `little`. |
+
+| Type  | Registres | Contenu |
+|-------|-----------|---------|
+| `u16` | 1 | Entier non signé 16 bits. |
+| `s16` | 1 | Entier signé 16 bits (complément à deux). |
+| `u32` | 2 | Entier non signé 32 bits. |
+| `s32` | 2 | Entier signé 32 bits. |
+| `f32` | 2 | Flottant IEEE 754 simple précision. |
+
+`f32` :
+
+- big-endian par défaut (`word_order: big`) ; `little` pour les équipements
+  qui inversent les deux mots ;
+- pas d'échelle par défaut, mais `scale` reste appliqué s'il est présent
+  (ex. `scale: 0.001` pour publier en kWh un compteur exprimé en Wh) ;
+- une valeur **NaN ou infinie** n'est pas publiée : elle produit un
+  avertissement dans les logs, la valeur retenue précédente reste en place ;
+- **lecture seule** : `f32` est refusé dans `writes:` (single comme
+  `layout`), la surface d'écriture n'est pas élargie par ce type.
+
 ## Essais locaux (Mosquitto + Home Assistant + simulateur)
 
 `docker-compose.dev.yml` monte une stack d'essai. **Ne pas utiliser en prod.**
@@ -120,7 +184,7 @@ essai avec le vrai onduleur, utiliser `docker-compose.yml` sur la cible Linux.
 
 Chaîne fonctionnelle de bout en bout :
 
-- **domain** — value objects, décodage (`u16/s16/u32/s32`, word order),
+- **domain** — value objects, décodage (`u16/s16/u32/s32/f32`, word order),
   encodage (inverse), validation des écritures (whitelist/allowed/clamp).
 - **adapters** — pymodbus série RTU et TCP (`socket`/`rtu`/`solarman_v5`,
   reconnexion automatique, exceptions → `Result`), MQTT
@@ -138,7 +202,7 @@ read-modify-write (`preserve`). Une commande peut piloter **un seul** champ
 trame 0x10 (charge utile JSON `{"active": -2000, "reactive": 0}`), chaque champ
 identifié par sa `key` dans `layout`, validé (min/max) et clampé indépendamment.
 
-Qualité : `ruff` clean, `mypy --strict` clean, `pytest` 51 tests verts (aucun
+Qualité : `ruff` clean, `mypy --strict` clean, `pytest` 105 tests verts (aucun
 matériel/broker requis).
 
 ### Reste à décider (non implémenté)

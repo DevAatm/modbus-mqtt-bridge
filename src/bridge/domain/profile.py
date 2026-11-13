@@ -14,10 +14,22 @@ from typing import Literal
 
 from bridge.domain.values import RegisterAddress, SlaveId
 
-# Types de registre supportés. Signé et non signé sont distincts, jamais un
+# Types de registre ÉCRIVABLES. Signé et non signé sont distincts, jamais un
 # `int` nu (une puissance batterie est négative en décharge).
 RegisterType = Literal["u16", "s16", "u32", "s32"]
+
+# Types de point LISIBLES : les types écrivables, plus le flottant IEEE 754
+# 32 bits (compteurs Eastron SDM…). `f32` est délibérément absent de
+# `RegisterType` : ajouter un type lisible n'élargit pas la surface d'écriture.
+PointType = Literal["u16", "s16", "u32", "s32", "f32"]
 WordOrder = Literal["big", "little"]
+
+
+class RegisterTable(Enum):
+    """Table Modbus lue par un bloc. Donnée du profil, traduite par l'adaptateur."""
+
+    HOLDING = "holding"  # fonction 0x03 (lecture/écriture)
+    INPUT = "input"  # fonction 0x04 (lecture seule)
 
 
 class WriteMode(Enum):
@@ -39,7 +51,7 @@ class PointSpec:
 
     key: str
     offset: int
-    type: RegisterType
+    type: PointType
     scale: float = 1.0
     unit: str = ""
     word_order: WordOrder = "big"
@@ -54,6 +66,7 @@ class BlockSpec:
     count: int
     interval: timedelta
     points: tuple[PointSpec, ...]
+    function: RegisterTable = RegisterTable.HOLDING
 
 
 @dataclass(frozen=True, slots=True)

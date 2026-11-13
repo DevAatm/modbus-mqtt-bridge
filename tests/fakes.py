@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import AsyncIterator
 
+from bridge.domain.profile import RegisterTable
 from bridge.domain.result import Err, Ok, Result
 from bridge.domain.values import RegisterAddress
 from bridge.ports.publisher import IncomingCommand
@@ -22,6 +23,7 @@ class FakeTransport:
         self._reads: deque[Result[tuple[int, ...], ModbusError]] = deque()
         self.writes: list[tuple[RegisterAddress, tuple[int, ...]]] = []
         self.ops: list[str] = []
+        self.read_tables: list[RegisterTable] = []
 
     def script_read(self, registers: tuple[int, ...]) -> None:
         self._reads.append(Ok(registers))
@@ -29,10 +31,11 @@ class FakeTransport:
     def script_read_error(self, error: ModbusError) -> None:
         self._reads.append(Err(error))
 
-    async def read_holding(
-        self, address: RegisterAddress, count: int
+    async def read_registers(
+        self, table: RegisterTable, address: RegisterAddress, count: int
     ) -> Result[tuple[int, ...], ModbusError]:
         self.ops.append("read")
+        self.read_tables.append(table)
         if self._reads:
             return self._reads.popleft()
         return Ok(tuple(0 for _ in range(count)))

@@ -13,7 +13,7 @@ import logging
 
 from bridge.domain.commands import PlannedWrite
 from bridge.domain.encoding import encode_value
-from bridge.domain.profile import WriteMode, WriteSpec
+from bridge.domain.profile import RegisterTable, WriteMode, WriteSpec
 from bridge.domain.result import Err, Ok, Result
 from bridge.domain.values import RegisterAddress
 from bridge.ports.publisher import MessagePublisher
@@ -31,12 +31,12 @@ class BusDispatcher:
         self._lock = asyncio.Lock()
         self._pending: asyncio.Queue[PlannedWrite] = asyncio.Queue()
 
-    async def read_holding(
-        self, address: RegisterAddress, count: int
+    async def read_registers(
+        self, table: RegisterTable, address: RegisterAddress, count: int
     ) -> Result[tuple[int, ...], ModbusError]:
         """Lecture sérialisée. Utilisée par le poller entre deux écritures."""
         async with self._lock:
-            return await self._transport.read_holding(address, count)
+            return await self._transport.read_registers(table, address, count)
 
     def enqueue_write(self, planned: PlannedWrite) -> None:
         """Dépose une écriture validée. Ne saute jamais son tour."""
@@ -77,7 +77,10 @@ class BusDispatcher:
         # Registres de base : relecture (preserve) ou zéros. La validation a
         # garanti que sans preserve, tous les champs sont fournis.
         if spec.preserve:
-            current = await self._transport.read_holding(spec.address, spec.count)
+            # Seuls les holding sont écrivables : la relecture vise toujours 0x03.
+            current = await self._transport.read_registers(
+                RegisterTable.HOLDING, spec.address, spec.count
+            )
             if isinstance(current, Err):
                 return Err(f"relecture bloc impossible: {current.error.detail}")
             registers = list(current.value)

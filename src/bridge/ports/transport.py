@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from bridge.domain.profile import RegisterTable
 from bridge.domain.result import Result
 from bridge.domain.values import RegisterAddress
 
@@ -25,10 +26,13 @@ class ModbusError:
 
 @runtime_checkable
 class ModbusTransport(Protocol):
-    async def read_holding(
-        self, address: RegisterAddress, count: int
+    async def read_registers(
+        self, table: RegisterTable, address: RegisterAddress, count: int
     ) -> Result[tuple[int, ...], ModbusError]:
-        """Lit `count` registres à partir de `address` (fonction 0x03)."""
+        """Lit `count` registres à partir de `address` dans `table`.
+
+        HOLDING -> fonction 0x03, INPUT -> fonction 0x04.
+        """
         ...
 
     async def write_single(self, address: RegisterAddress, value: int) -> Result[None, ModbusError]:

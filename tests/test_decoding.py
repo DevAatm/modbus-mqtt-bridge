@@ -6,7 +6,7 @@ import pytest
 
 from bridge.domain.decoding import decode_point
 from bridge.domain.profile import PointSpec
-from bridge.domain.result import Ok
+from bridge.domain.result import Err, Ok
 
 # Bloc `battery` du profil de référence, avec une batterie en décharge :
 # courant et puissance négatifs (d'où l'importance de s16 vs u16).
@@ -49,3 +49,64 @@ def test_offset_overflow_is_err() -> None:
     spec = PointSpec("oops", 6, "u32")  # 6+2 > 7
     result = decode_point(BATTERY, spec)
     assert not result.is_ok()
+
+
+# --- f32 : IEEE 754 32 bits, mot de poids fort en premier (Eastron SDM) ------
+
+
+@pytest.mark.parametrize(
+    ("registers", "expected"),
+    [
+        ((0x4366, 0x0000), 230.0),  # 230.0 V
+        ((0xC366, 0x0000), -230.0),  # puissance exportée : négative
+        ((0x3F80, 0x0000), 1.0),  # facteur de puissance unitaire
+        ((0x4248, 0x0000), 50.0),  # 50 Hz
+        ((0x0000, 0x0000), 0.0),
+    ],
+)
+def test_f32_big_endian(registers: tuple[int, int], expected: float) -> None:
+    result = decode_point(registers, PointSpec("v", 0, "f32", unit="V"))
+    assert isinstance(result, Ok)
+    assert result.value.value == pytest.approx(expected)
+    assert result.value.unit == "V"
+
+
+def test_f32_little_word_order() -> None:
+    result = decode_point((0x0000, 0x4366), PointSpec("v", 0, "f32", word_order="little"))
+    assert isinstance(result, Ok)
+    assert result.value.value == pytest.approx(230.0)
+
+
+def test_f32_scale_applied_when_present() -> None:
+    # 230.0 Wh lus, publiés en kWh via scale 0.001.
+    result = decode_point((0x4366, 0x0000), PointSpec("e", 0, "f32", scale=0.001))
+    assert isinstance(result, Ok)
+    assert result.value.value == pytest.approx(0.23)
+
+
+def test_f32_at_offset_in_block() -> None:
+    block = (0x4366, 0x0000, 0x0000, 0x0000, 0x40A0, 0x0000)  # 230.0, 0.0, 5.0
+    result = decode_point(block, PointSpec("i", 4, "f32"))
+    assert isinstance(result, Ok)
+    assert result.value.value == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize(
+    "registers",
+    [
+        (0x7FC0, 0x0000),  # NaN silencieux
+        (0xFFC0, 0x0001),  # NaN négatif avec charge utile
+        (0x7F80, 0x0000),  # +inf
+        (0xFF80, 0x0000),  # -inf
+    ],
+)
+def test_f32_non_finite_is_err(registers: tuple[int, int]) -> None:
+    result = decode_point(registers, PointSpec("v", 0, "f32"))
+    assert isinstance(result, Err)
+    assert result.error.kind == "non_finite"
+
+
+def test_overflow_error_kind() -> None:
+    result = decode_point((0x4366,), PointSpec("v", 0, "f32"))
+    assert isinstance(result, Err)
+    assert result.error.kind == "overflow"

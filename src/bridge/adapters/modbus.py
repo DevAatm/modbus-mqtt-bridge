@@ -4,7 +4,7 @@ SEUL endroit qui ouvre un lien vers l'équipement. Convertit les exceptions
 pymodbus et les réponses d'erreur en `ModbusError`. Rien du domaine ne dépend
 de ce module.
 
-Le protocole applicatif (fonctions 0x03/0x06/0x10, registres, `slave_id`) est
+Le protocole applicatif (fonctions 0x03/0x04/0x06/0x10, registres, `slave_id`) est
 identique sur les deux liens : seule l'ADU change (CRC en RTU, en-tête MBAP en
 TCP). D'où une seule implémentation, deux fabriques de client.
 
@@ -28,7 +28,7 @@ from pymodbus.framer import FramerType
 from pymodbus.pdu import DecodePDU, ExceptionResponse
 
 from bridge.adapters.solarman_v5 import SolarmanV5Framer
-from bridge.domain.profile import SerialSettings
+from bridge.domain.profile import RegisterTable, SerialSettings
 from bridge.domain.result import Err, Ok, Result
 from bridge.domain.values import RegisterAddress, SlaveId
 from bridge.ports.transport import ModbusError
@@ -79,13 +79,17 @@ class PymodbusTransport:
     async def close(self) -> None:
         self._client.close()
 
-    async def read_holding(
-        self, address: RegisterAddress, count: int
+    async def read_registers(
+        self, table: RegisterTable, address: RegisterAddress, count: int
     ) -> Result[tuple[int, ...], ModbusError]:
+        # Seul endroit où la table du profil devient un code fonction Modbus.
+        read = (
+            self._client.read_input_registers
+            if table is RegisterTable.INPUT
+            else self._client.read_holding_registers
+        )
         try:
-            rr = await self._client.read_holding_registers(
-                address.value, count=count, device_id=self._slave_id
-            )
+            rr = await read(address.value, count=count, device_id=self._slave_id)
         except ModbusException as exc:
             return Err(_from_exception(exc))
         if rr.isError():

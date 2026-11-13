@@ -14,11 +14,14 @@ from typing import Any, cast, get_args
 
 import yaml
 
+from bridge.domain.decoding import register_width
 from bridge.domain.profile import (
     BlockSpec,
     DeviceProfile,
     LayoutSpec,
     PointSpec,
+    PointType,
+    RegisterTable,
     RegisterType,
     SerialSettings,
     WordOrder,
@@ -32,6 +35,8 @@ _DURATION = re.compile(r"^\s*(\d+)\s*(ms|s|m|h)\s*$")
 _UNITS: dict[str, float] = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
 
 _REGISTER_TYPES: frozenset[str] = frozenset(get_args(RegisterType))
+_POINT_TYPES: frozenset[str] = frozenset(get_args(PointType))
+_TABLES: dict[str, RegisterTable] = {t.value: t for t in RegisterTable}
 _WORD_ORDERS: frozenset[str] = frozenset(get_args(WordOrder))
 
 
@@ -85,9 +90,23 @@ def _unwrap(result: Result[Any, str], ctx: str) -> Any:
 
 
 def _register_type(value: Any, ctx: str) -> RegisterType:
+    """Type d'un registre écrit. Plus étroit que `_point_type` : `f32` refusé."""
     if value not in _REGISTER_TYPES:
         raise ProfileError(f"{ctx}: type invalide {value!r} (attendu {sorted(_REGISTER_TYPES)})")
     return cast(RegisterType, value)
+
+
+def _point_type(value: Any, ctx: str) -> PointType:
+    if value not in _POINT_TYPES:
+        raise ProfileError(f"{ctx}: type invalide {value!r} (attendu {sorted(_POINT_TYPES)})")
+    return cast(PointType, value)
+
+
+def _register_table(value: Any, ctx: str) -> RegisterTable:
+    table = _TABLES.get(value) if isinstance(value, str) else None
+    if table is None:
+        raise ProfileError(f"{ctx}: function invalide {value!r} (attendu {sorted(_TABLES)})")
+    return table
 
 
 def _word_order(value: Any, ctx: str) -> WordOrder:
@@ -115,10 +134,10 @@ def _parse_point(raw: Any, block_name: str, count: int) -> PointSpec:
     key = str(_require(m, "key", ctx))
     ctx = f"block {block_name!r} point {key!r}"
     offset = int(_require(m, "offset", ctx))
-    type_ = _register_type(_require(m, "type", ctx), ctx)
+    type_ = _point_type(_require(m, "type", ctx), ctx)
     word_order = _word_order(m.get("word_order", "big"), ctx)
 
-    width = 2 if type_ in ("u32", "s32") else 1
+    width = register_width(type_)
     if offset < 0 or offset + width > count:
         raise ProfileError(
             f"{ctx}: offset {offset} (+{width}) déborde du bloc de {count} registres"
@@ -144,13 +163,22 @@ def _parse_block(raw: Any) -> BlockSpec:
     if count < 1:
         raise ProfileError(f"{ctx}: count doit être >= 1")
     interval = _unwrap(parse_duration(_require(m, "interval", ctx)), ctx)
+    # Absent = holding (0x03) : les profils antérieurs restent valides tels quels.
+    function = _register_table(m.get("function", RegisterTable.HOLDING.value), ctx)
 
     points_raw = _require(m, "points", ctx)
     if not isinstance(points_raw, list) or not points_raw:
         raise ProfileError(f"{ctx}: 'points' doit être une liste non vide")
     points = tuple(_parse_point(p, name, count) for p in points_raw)
 
-    return BlockSpec(name=name, address=address, count=count, interval=interval, points=points)
+    return BlockSpec(
+        name=name,
+        address=address,
+        count=count,
+        interval=interval,
+        points=points,
+        function=function,
+    )
 
 
 def _parse_layout(raw: Any, write_key: str, count: int) -> LayoutSpec:
@@ -158,7 +186,7 @@ def _parse_layout(raw: Any, write_key: str, count: int) -> LayoutSpec:
     m = _as_mapping(raw, ctx)
     offset = int(_require(m, "offset", ctx))
     type_ = _register_type(_require(m, "type", ctx), ctx)
-    width = 2 if type_ in ("u32", "s32") else 1
+    width = register_width(type_)
     if offset < 0 or offset + width > count:
         raise ProfileError(
             f"{ctx}: offset {offset} (+{width}) déborde du bloc de {count} registres"

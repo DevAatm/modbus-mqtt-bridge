@@ -52,17 +52,53 @@ services:
     volumes:
       - ./profiles/sofar-esi-5k-s1.yaml:/etc/bridge/profile.yaml:ro
     environment:
-      modbus_transport: tcp
-      modbus_host: 192.168.1.50
-      modbus_port: "502"
-      modbus_framing: socket   # ou 'rtu' derrière une passerelle rs485
-      modbus_timeout: "3"      # secondes ; la latence réseau n'est pas le 3.5t du rtu
-      profile: /etc/bridge/profile.yaml
-      read_only: "true"
-      mqtt_host: mosquitto
+      # Noms en MAJUSCULES : sous Linux, les variables d'environnement sont
+      # sensibles à la casse et le service ne lit que celles-ci.
+      MODBUS_TRANSPORT: tcp
+      MODBUS_HOST: 192.168.1.50
+      MODBUS_PORT: "502"
+      MODBUS_FRAMING: socket   # ou 'rtu' derrière une passerelle RS485
+      MODBUS_TIMEOUT: "3"      # secondes ; la latence réseau n'est pas le 3.5t du RTU
+      PROFILE: /etc/bridge/profile.yaml
+      READ_ONLY: "true"
+      MQTT_HOST: mosquitto
     mem_limit: 128m
     cpus: 0.25
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
     restart: unless-stopped
+
+# --- Variante plusieurs équipements sur un même bus -------------------------
+# Un bus RS485 n'admet qu'UN maître : deux compteurs en guirlande sur le même
+# adaptateur se servent avec UN SEUL conteneur et un fichier de bus (BUS), pas
+# avec deux conteneurs. Exemple : examples/bus-sdm120.yaml (deux SDM120,
+# adresses 1 et 2). BUS remplace PROFILE (les deux ensemble = refus au
+# démarrage). Une availability MQTT par équipement ; voir README.
+#
+# Vaut aussi en TCP derrière une passerelle transparente (MODBUS_TRANSPORT=tcp,
+# MODBUS_FRAMING=rtu) : plusieurs esclaves sur le RS485 de la passerelle.
+
+  # modbus-bridge-bus:
+    # build: .
+    # devices:
+      # - "/dev/serial/by-id/usb-FTDI_...-if00-port0:/dev/rs485"
+    # volumes:
+      # # Dossier des profils + fichier de bus ; dans bus.yaml, les chemins
+      # # `profiles/...` sont relatifs au fichier de bus.
+      # - ./profiles:/etc/bridge/profiles:ro
+      # - ./examples/bus-sdm120.yaml:/etc/bridge/bus.yaml:ro
+    # environment:
+      # SERIAL_PORT: /dev/rs485
+      # BUS: /etc/bridge/bus.yaml
+      # READ_ONLY: "true"
+      # MQTT_HOST: mosquitto
+    # mem_limit: 128m
+    # cpus: 0.25
+    # logging:
+      # driver: json-file
+      # options: { max-size: "10m", max-file: "3" }
+    # healthcheck:
+      # test: ["CMD", "python", "-m", "bridge.healthcheck"]
+      # interval: 60s
+    # restart: unless-stopped

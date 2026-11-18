@@ -11,7 +11,7 @@ from typing import cast
 import pytest
 from pymodbus.client.base import ModbusBaseClient
 
-from bridge.adapters.modbus import PymodbusTransport
+from bridge.adapters.modbus import ModbusBus, PymodbusTransport
 from bridge.domain.profile import RegisterTable
 from bridge.domain.result import Err, Ok
 from bridge.domain.values import RegisterAddress, SlaveId
@@ -70,3 +70,11 @@ async def test_input_read_error_is_err() -> None:
     client = _RecordingClient(error=True)
     result = await _transport(client).read_registers(RegisterTable.INPUT, RegisterAddress(0), 2)
     assert isinstance(result, Err)
+
+
+async def test_bus_views_address_their_own_slave_on_the_shared_client() -> None:
+    client = _RecordingClient()
+    bus = ModbusBus(cast(ModbusBaseClient, client), "test")
+    await bus.for_slave(SlaveId(1)).read_registers(RegisterTable.INPUT, RegisterAddress(0), 2)
+    await bus.for_slave(SlaveId(2)).read_registers(RegisterTable.INPUT, RegisterAddress(0), 2)
+    assert [call[3] for call in client.calls] == [1, 2]

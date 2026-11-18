@@ -12,14 +12,14 @@ import logging
 from typing import assert_never
 
 from bridge.adapters.clock import SystemClock
-from bridge.adapters.modbus import PymodbusTransport, open_serial, open_tcp
+from bridge.adapters.modbus import ModbusBus, open_serial, open_tcp
 from bridge.adapters.mqtt import MqttPublisher
 from bridge.adapters.profile_yaml import load_profile
 from bridge.app.config import Config, SerialEndpoint, TcpEndpoint
 from bridge.app.dispatcher import BusDispatcher
 from bridge.app.poller import Poller
 from bridge.domain.commands import WriteCommand, validate
-from bridge.domain.profile import DeviceProfile
+from bridge.domain.profile import DeviceProfile, SerialSettings
 from bridge.domain.result import Err
 from bridge.domain.values import DeviceId
 from bridge.ports.publisher import MessagePublisher
@@ -28,7 +28,7 @@ _log = logging.getLogger(__name__)
 
 
 async def run(config: Config) -> None:
-    """Démarre le service. Annulable ; nettoie transport et publisher en sortie."""
+    """Démarre le service. Annulable ; nettoie bus et publisher en sortie."""
     profile = load_profile(config.profile_path)
     device = _device_id(profile)
     _log.info(
@@ -41,7 +41,8 @@ async def run(config: Config) -> None:
     if config.read_only:
         _log.warning("service en LECTURE SEULE (READ_ONLY) : toute écriture sera refusée")
 
-    transport = _make_transport(config, profile)
+    bus = _open_bus(config, profile.serial)
+    transport = bus.for_slave(profile.slave_id)
     publisher = MqttPublisher(
         config.mqtt_host,
         device,
@@ -52,8 +53,8 @@ async def run(config: Config) -> None:
     )
     clock = SystemClock()
 
-    await transport.connect()
-    _log.info("équipement connecté via %s (slave %d)", transport, profile.slave_id.value)
+    await bus.connect()
+    _log.info("équipement connecté via %s (slave %d)", bus, profile.slave_id.value)
     try:
         await publisher.connect()
         _log.info(
@@ -75,11 +76,12 @@ async def run(config: Config) -> None:
         finally:
             await publisher.close()  # publie offline
     finally:
-        await transport.close()
+        await bus.close()
 
 
-def _make_transport(config: Config, profile: DeviceProfile) -> PymodbusTransport:
-    """Choisit le lien. Le reste du service ne voit qu'un `ModbusTransport`.
+def _open_bus(config: Config, serial: SerialSettings) -> ModbusBus:
+    """Choisit le lien. Le reste du service ne voit que des `ModbusTransport`,
+    obtenus par `bus.for_slave(...)`.
 
     L'invariant mono-maître vaut pour les deux liens : en TCP l'équipement
     n'accepte souvent qu'une ou deux sockets, et derrière une passerelle le
@@ -87,13 +89,12 @@ def _make_transport(config: Config, profile: DeviceProfile) -> PymodbusTransport
     """
     endpoint = config.endpoint
     if isinstance(endpoint, SerialEndpoint):
-        return open_serial(endpoint.port, profile.serial, profile.slave_id)
+        return open_serial(endpoint.port, serial)
     if isinstance(endpoint, TcpEndpoint):
         return open_tcp(
             endpoint.host,
             endpoint.port,
             endpoint.framing,
-            profile.slave_id,
             logger_serial=endpoint.logger_serial,
             timeout_s=endpoint.timeout_s,
         )

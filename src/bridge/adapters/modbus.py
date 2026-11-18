@@ -15,6 +15,13 @@ Attention : `tcp` recouvre trois matériels différents.
     trames RTU encapsulées dans un datagramme propriétaire).
 Un mauvais framing ne produit pas de valeurs fausses, il produit des timeouts.
 Le choix est explicite dans la configuration, jamais deviné au runtime.
+
+Bus et esclaves : un `ModbusBus` possède LE client pymodbus (une connexion,
+ouverte et fermée une seule fois). Chaque équipement du bus en obtient une vue
+`PymodbusTransport` par `bus.for_slave(slave_id)` : même client, adresse
+d'esclave propre passée à chaque requête (`device_id=`). Les vues ne peuvent ni
+ouvrir ni fermer le client ; la sérialisation des trames entre esclaves est
+assurée en amont par le verrou partagé des dispatchers.
 """
 
 from __future__ import annotations
@@ -53,16 +60,15 @@ _FRAMERS: dict[str, FramerType] = {
 }
 
 
-class PymodbusTransport:
-    """Implémente `ModbusTransport` au-dessus d'un client pymodbus asynchrone.
+class ModbusBus:
+    """Propriétaire du client pymodbus d'un lien (port série ou socket TCP).
 
     Construire par `open_serial` / `open_tcp`, jamais directement : le choix du
-    lien appartient au composition root.
+    lien appartient au composition root. Un seul `ModbusBus` par lien physique.
     """
 
-    def __init__(self, client: ModbusBaseClient, slave_id: SlaveId, description: str) -> None:
+    def __init__(self, client: ModbusBaseClient, description: str) -> None:
         self._client = client
-        self._slave_id = slave_id.value
         self._description = description
 
     def __str__(self) -> str:
@@ -78,6 +84,30 @@ class PymodbusTransport:
 
     async def close(self) -> None:
         self._client.close()
+
+    def for_slave(self, slave_id: SlaveId) -> PymodbusTransport:
+        """Vue `ModbusTransport` liée à un esclave ; partage le client du bus."""
+        return PymodbusTransport(self._client, slave_id, self._description)
+
+
+class PymodbusTransport:
+    """Implémente `ModbusTransport` pour UN esclave, au-dessus d'un client partagé.
+
+    Obtenir par `ModbusBus.for_slave`. Pas de `connect`/`close` : le cycle de
+    vie du client appartient au bus, une vue ne doit pas couper ses voisines.
+    """
+
+    def __init__(self, client: ModbusBaseClient, slave_id: SlaveId, description: str) -> None:
+        self._client = client
+        self._slave_id = slave_id.value
+        self._description = description
+
+    def __str__(self) -> str:
+        return self._description
+
+    @property
+    def slave_id(self) -> SlaveId:
+        return SlaveId(self._slave_id)
 
     async def read_registers(
         self, table: RegisterTable, address: RegisterAddress, count: int
@@ -119,7 +149,7 @@ class PymodbusTransport:
         return Ok(None)
 
 
-def open_serial(port: str, serial: SerialSettings, slave_id: SlaveId) -> PymodbusTransport:
+def open_serial(port: str, serial: SerialSettings) -> ModbusBus:
     """Lien série RTU. Le process est alors l'unique maître du bus."""
     client = AsyncModbusSerialClient(
         port=port,
@@ -128,20 +158,19 @@ def open_serial(port: str, serial: SerialSettings, slave_id: SlaveId) -> Pymodbu
         parity=serial.parity,
         stopbits=serial.stopbits,
     )
-    return PymodbusTransport(client, slave_id, f"série {port}")
+    return ModbusBus(client, f"série {port}")
 
 
 def open_tcp(
     host: str,
     port: int,
     framing: str,
-    slave_id: SlaveId,
     *,
     logger_serial: int | None = None,
     timeout_s: float = 3.0,
     reconnect_delay_s: float = 1.0,
     reconnect_delay_max_s: float = 60.0,
-) -> PymodbusTransport:
+) -> ModbusBus:
     """Lien TCP.
 
     La reconnexion est déléguée à pymodbus (backoff exponentiel borné) : une
@@ -167,7 +196,7 @@ def open_tcp(
         # nôtre est posé ensuite sur le gestionnaire de transactions. C'est le
         # seul point où l'on touche à l'intérieur de la bibliothèque.
         client.ctx.framer = SolarmanV5Framer(DecodePDU(False), logger_serial)
-    return PymodbusTransport(client, slave_id, f"tcp {host}:{port} ({framing})")
+    return ModbusBus(client, f"tcp {host}:{port} ({framing})")
 
 
 def _from_exception(exc: ModbusException) -> ModbusError:

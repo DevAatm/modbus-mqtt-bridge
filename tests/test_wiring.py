@@ -7,8 +7,9 @@ from datetime import timedelta
 from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 from pymodbus.framer import FramerRTU, FramerSocket
 
+from bridge.adapters.modbus import ModbusBus, PymodbusTransport
 from bridge.app.config import Config, ModbusEndpoint, SerialEndpoint, TcpEndpoint
-from bridge.app.wiring import _make_transport, _parse_command
+from bridge.app.wiring import _open_bus, _parse_command
 from bridge.domain.profile import BlockSpec, DeviceProfile, PointSpec, SerialSettings
 from bridge.domain.values import RegisterAddress, SlaveId
 
@@ -72,15 +73,20 @@ def _config(endpoint: ModbusEndpoint) -> Config:
     )
 
 
+def _transport(config: Config) -> PymodbusTransport:
+    profile = _profile()
+    return _open_bus(config, profile.serial).for_slave(profile.slave_id)
+
+
 async def test_serial_endpoint_builds_a_serial_client() -> None:
-    transport = _make_transport(_config(SerialEndpoint("/dev/rs485")), _profile())
+    transport = _transport(_config(SerialEndpoint("/dev/rs485")))
     assert isinstance(transport._client, AsyncModbusSerialClient)
     assert transport._slave_id == 3
 
 
 async def test_native_tcp_uses_the_socket_framer() -> None:
     endpoint = TcpEndpoint(host="192.168.1.50", port=502, framing="socket", timeout_s=3.0)
-    transport = _make_transport(_config(endpoint), _profile())
+    transport = _transport(_config(endpoint))
     assert isinstance(transport._client, AsyncModbusTcpClient)
     assert isinstance(transport._client.ctx.framer, FramerSocket)
     assert str(transport) == "tcp 192.168.1.50:502 (socket)"
@@ -89,5 +95,19 @@ async def test_native_tcp_uses_the_socket_framer() -> None:
 async def test_transparent_gateway_uses_the_rtu_framer() -> None:
     # Passerelle TCP<->RS485 : trames RTU encapsulées, pas d'en-tête MBAP.
     endpoint = TcpEndpoint(host="gw.lan", port=8899, framing="rtu", timeout_s=1.5)
-    transport = _make_transport(_config(endpoint), _profile())
+    transport = _transport(_config(endpoint))
     assert isinstance(transport._client.ctx.framer, FramerRTU)
+
+
+# --- bus partagé ------------------------------------------------------------
+# Plusieurs esclaves sur un même lien : une seule connexion, une vue par adresse.
+
+
+async def test_bus_views_share_one_client_with_their_own_slave_id() -> None:
+    bus = _open_bus(_config(SerialEndpoint("/dev/rs485")), SerialSettings())
+    assert isinstance(bus, ModbusBus)
+    meter_1 = bus.for_slave(SlaveId(1))
+    meter_2 = bus.for_slave(SlaveId(2))
+    assert meter_1._client is meter_2._client is bus._client
+    assert (meter_1.slave_id, meter_2.slave_id) == (SlaveId(1), SlaveId(2))
+    assert str(meter_1) == str(bus) == "série /dev/rs485"

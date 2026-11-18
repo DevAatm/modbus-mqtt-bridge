@@ -13,6 +13,13 @@
 #
 #   docker compose -f docker-compose.dev.yml --profile sim-tcp up --build
 #
+# 'sim-bus' : deux esclaves (adresses 1 et 2) derrière une même passerelle
+# transparente simulée (TCP, framing 'rtu'), interrogés par UN bridge via un
+# fichier de bus (BUS). Deux équipements apparaissent dans HA, chacun avec sa
+# propre availability.
+#
+#   docker compose -f docker-compose.dev.yml --profile sim-bus up --build
+#
 # MQTT anonyme sur localhost:1883, Home Assistant sur http://localhost:8123
 
 services:
@@ -87,6 +94,38 @@ services:
       MODBUS_FRAMING: socket
       MQTT_HOST: mosquitto
       PROFILE: /etc/bridge/profile.yaml
+      READ_ONLY: "true"
+      LOG_LEVEL: DEBUG
+      HEALTH_FILE: /tmp/bridge-health
+
+  # --- Variante bus partagé : deux esclaves, un seul maître -----------------
+  modbus-sim-bus:
+    profiles: ["sim-bus"]
+    build:
+      context: .
+      target: dev
+    command:
+      ["python", "-m", "tools.modbus_sim", "--slaves", "1,2", "tcp", "5020", "--framing", "rtu"]
+
+  modbus-bridge-bus:
+    profiles: ["sim-bus"]
+    build:
+      context: .
+      target: runtime
+    depends_on:
+      - mosquitto
+      - modbus-sim-bus
+    volumes:
+      - ./profiles:/etc/bridge/profiles:ro
+      - ./tools/bus.dev.yaml:/etc/bridge/bus.yaml:ro
+    environment:
+      MODBUS_TRANSPORT: tcp
+      MODBUS_HOST: modbus-sim-bus
+      MODBUS_PORT: "5020"
+      # Passerelle transparente TCP<->RS485 : le cas d'usage du mode bus.
+      MODBUS_FRAMING: rtu
+      MQTT_HOST: mosquitto
+      BUS: /etc/bridge/bus.yaml    # exclusif de PROFILE
       READ_ONLY: "true"
       LOG_LEVEL: DEBUG
       HEALTH_FILE: /tmp/bridge-health

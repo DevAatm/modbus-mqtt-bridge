@@ -1,0 +1,8 @@
+# Fichier de bus d'ESSAI (profil compose `sim-bus`) : deux esclaves simulés
+# sur un même lien. Le simulateur ne sert que les registres du profil Sofar,
+# d'où ce profil deux fois ; en production, cf. examples/bus-sdm120.yaml.
+# Chemins relatifs au fichier de bus : monté en /etc/bridge/bus.yaml, à côté
+# du dossier /etc/bridge/profiles.
+devices:
+  - { name: sim-onduleur-a, profile: profiles/sofar-esi-5k-s1.yaml, slave_id: 1 }
+  - { name: sim-onduleur-b, profile: profiles/sofar-esi-5k-s1.yaml, slave_id: 2 }

@@ -77,6 +77,18 @@ def _require(mapping: dict[str, Any], key: str, ctx: str) -> Any:
     return mapping[key]
 
 
+def strict_int(value: Any, field: str, ctx: str) -> int:
+    """Entier YAML strict : refuse booléen, flottant, chaîne, liste...
+
+    `int(...)` laisserait passer `"1"`, tronquerait `1.7` et lèverait une
+    `TypeError` brute sur une liste. Ici : entier natif, sinon `ProfileError`.
+    """
+    # bool est un sous-type d'int en Python : `slave_id: true` vaudrait 1.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProfileError(f"{ctx}: {field} doit être un entier, reçu {value!r}")
+    return value
+
+
 def _as_mapping(value: Any, ctx: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProfileError(f"{ctx}: mapping attendu, reçu {type(value).__name__}")
@@ -282,7 +294,8 @@ def _parse_profile(raw: dict[str, Any]) -> DeviceProfile:
     device = _as_mapping(_require(raw, "device", "profil"), "device")
     name = str(_require(device, "name", "device"))
     protocol = str(_require(device, "protocol", "device"))
-    slave_id = _unwrap(SlaveId.parse(int(_require(device, "slave_id", "device"))), "device")
+    raw_slave_id = _require(device, "slave_id", "device")
+    slave_id = _unwrap(SlaveId.parse(strict_int(raw_slave_id, "slave_id", "device")), "device")
     serial = _parse_serial(device.get("serial"), "device.serial")
 
     blocks_raw = _require(raw, "blocks", "profil")

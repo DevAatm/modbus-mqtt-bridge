@@ -167,3 +167,17 @@ def test_f32_write_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(ProfileError, match="type invalide 'f32'"):
         load_profile(_write(tmp_path, text))
+
+
+@pytest.mark.parametrize("raw", ["[1]", "'1'", "1.5", "true", "{a: 1}", "null"])
+def test_non_integer_slave_id_rejected(tmp_path: Path, raw: str) -> None:
+    # Avant : `int([1])` laissait échapper une TypeError, `'1'` passait et
+    # `1.5` était tronqué en silence. Désormais : ProfileError explicite.
+    text = (
+        f"device: {{name: x, protocol: p, slave_id: {raw}}}\n"
+        "blocks:\n"
+        "  - name: b\n    address: 0x10\n    count: 1\n    interval: 1s\n"
+        "    points:\n      - {key: k, offset: 0, type: u16}\n"
+    )
+    with pytest.raises(ProfileError, match="slave_id doit être un entier"):
+        load_profile(_write(tmp_path, text))

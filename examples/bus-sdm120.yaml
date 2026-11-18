@@ -1,0 +1,15 @@
+# Fichier de bus : deux compteurs Eastron SDM120 en guirlande sur un même
+# adaptateur USB-RS485, interrogés par UN SEUL bridge (un seul maître).
+#
+# Chaque compteur doit d'abord recevoir une adresse distincte (menu du
+# compteur ou logiciel Eastron) : à la livraison, tous répondent en 1.
+#
+# - name     : remplace celui du profil ; donne les topics <prefix>/<name>/...
+#              et le client MQTT <prefix>-<name>. Unique sur le bus.
+# - slave_id : remplace celui du profil (1..247). Unique sur le bus.
+# - profile  : chemin absolu, ou relatif à CE fichier. Le même profil peut
+#              servir plusieurs équipements ; tous doivent avoir les mêmes
+#              réglages `serial` (ils partagent la ligne).
+devices:
+  - { name: sdm120-pac,    profile: profiles/eastron-sdm120.yaml, slave_id: 1 }
+  - { name: sdm120-ballon, profile: profiles/eastron-sdm120.yaml, slave_id: 2 }

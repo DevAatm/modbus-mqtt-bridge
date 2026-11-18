@@ -15,10 +15,11 @@ invariants et contraintes de conception.
 src/bridge/
   domain/     types métier purs (values, profile, decoding, commands, result)
   ports/      interfaces Protocol (transport, publisher, clock)
-  adapters/   pymodbus (série RTU / TCP), MQTT (aiomqtt), YAML
+  adapters/   pymodbus (série RTU / TCP), MQTT (aiomqtt), YAML (profil, bus)
   app/        poller, dispatcher, wiring (composition root), config
   __main__.py, healthcheck.py
 profiles/     profils d'équipement
+examples/     fichiers de bus d'exemple
 tests/        décodage, validation des commandes, transport falsifié
 ```
 
@@ -36,7 +37,7 @@ pytest
 ## Exécution
 
 ```bash
-python -m bridge   # nécessite PROFILE, MQTT_HOST, et le lien (ci-dessous)
+python -m bridge   # nécessite PROFILE (ou BUS), MQTT_HOST, et le lien (ci-dessous)
 ```
 
 Ou via Docker : voir `docker-compose.yml`.
@@ -146,6 +147,82 @@ blocks:
 - **lecture seule** : `f32` est refusé dans `writes:` (single comme
   `layout`), la surface d'écriture n'est pas élargie par ce type.
 
+## Plusieurs équipements sur un même bus
+
+Un bus RS485 n'admet qu'**un seul maître**. Deux compteurs en guirlande sur
+le même adaptateur USB-RS485 ne se servent donc pas avec deux conteneurs
+(deux maîtres = trames qui se chevauchent, réponses lues par le mauvais
+process), mais avec **un seul bridge** et un fichier de bus, pointé par `BUS` :
+
+```yaml
+# bus.yaml — cf. examples/bus-sdm120.yaml
+devices:
+  - { name: sdm120-pac,    profile: profiles/eastron-sdm120.yaml, slave_id: 1 }
+  - { name: sdm120-ballon, profile: profiles/eastron-sdm120.yaml, slave_id: 2 }
+```
+
+- Le **profil** reste le modèle d'équipement, inchangé : le même
+  `eastron-sdm120.yaml` sert aux deux compteurs.
+- `name` et `slave_id` du fichier de bus **remplacent** ceux du profil.
+  `name` donne les topics (`modbus/sdm120-pac/state/power`...) et le client
+  MQTT (`modbus-sdm120-pac`).
+- Chemins de profil absolus, ou relatifs au fichier de bus.
+- `BUS` et `PROFILE` sont exclusifs. Sans `BUS`, `PROFILE` fonctionne comme
+  avant (un équipement, nom et adresse du profil).
+
+Le fichier est validé au démarrage ; le service refuse de démarrer
+(`BusError`) si la liste est vide, si un `slave_id` est en double ou hors
+1..247, si un `name` est en double ou inutilisable dans un topic, si un champ
+est inconnu, si un profil référencé est invalide, ou si les profils n'ont pas
+les mêmes réglages `serial` (ils partagent la ligne).
+
+```yaml
+services:
+  modbus-bridge:
+    build: .
+    devices:
+      - "/dev/serial/by-id/usb-FTDI_...-if00-port0:/dev/rs485"
+    volumes:
+      - ./profiles:/etc/bridge/profiles:ro
+      - ./bus.yaml:/etc/bridge/bus.yaml:ro    # profils référencés en profiles/...
+    environment:
+      SERIAL_PORT: /dev/rs485
+      BUS: /etc/bridge/bus.yaml               # à la place de PROFILE
+      MQTT_HOST: mosquitto
+      READ_ONLY: "true"
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    healthcheck:
+      test: ["CMD", "python", "-m", "bridge.healthcheck"]
+      interval: 60s
+    restart: unless-stopped
+```
+
+Fonctionnement :
+
+- **Une connexion, un verrou.** Le port (ou la socket) est ouvert une fois ;
+  chaque équipement a sa file d'écritures et ses acquittements, mais tous
+  partagent le même verrou : une seule trame à la fois sur la ligne.
+- **Une availability par équipement.** Chaque équipement a son propre client
+  MQTT, donc son propre LWT : un compteur débranché passe `offline` dans
+  Home Assistant, l'autre reste `online`.
+- **Fichier de santé partagé.** Il est rafraîchi dès qu'**un** équipement est
+  lu avec succès. La perte d'un seul compteur est signalée par son
+  availability, pas par un redémarrage du conteneur (qui couperait aussi les
+  autres). Le healthcheck ne tombe que si plus aucun équipement ne répond.
+- **Un équipement muet ralentit les autres.** Chaque lecture sans réponse
+  occupe la ligne pendant le timeout et ses tentatives (plusieurs secondes) :
+  les lectures des autres équipements sont retardées d'autant, pas perdues.
+
+**En TCP**, le mode bus vaut derrière une passerelle transparente TCP↔RS485
+(`MODBUS_TRANSPORT=tcp`, `MODBUS_FRAMING=rtu`) : plusieurs esclaves sur le
+RS485 de la passerelle, une seule socket. Il est moins pertinent en `socket`
+(un équipement Modbus TCP natif a en général sa propre adresse IP, donc son
+propre lien) et en `solarman_v5` (un logger ne dessert que son onduleur).
+
 ## Essais locaux (Mosquitto + Home Assistant + simulateur)
 
 `docker-compose.dev.yml` monte une stack d'essai. **Ne pas utiliser en prod.**
@@ -159,7 +236,14 @@ docker compose -f docker-compose.dev.yml --profile sim-tcp up --build
 
 # Même boucle derrière un logger Solarman simulé (enveloppe V5)
 docker compose -f docker-compose.dev.yml --profile sim-solarman up --build
+
+# Deux esclaves derrière une passerelle simulée, un seul bridge (BUS)
+docker compose -f docker-compose.dev.yml --profile sim-bus up --build
 ```
+
+Le simulateur sert plusieurs adresses avec `--slaves 1,2`
+(`python -m tools.modbus_sim --slaves 1,2 tcp 5020 --framing rtu`) ; chaque
+esclave a sa propre mémoire.
 
 Le logger simulé ne valide que l'intégration : son enveloppe est écrite
 d'après la même lecture du protocole que le framer du bridge. Seul un vrai
@@ -194,7 +278,9 @@ Chaîne fonctionnelle de bout en bout :
 - **app** — dispatcher (file sérialisée sous verrou, `preserve`, écriture
   bloc 0x10 mono- et multi-champ), poller (échéancier par bloc, santé fichier,
   bascule d'availability sur perte du lien),
-  wiring (`TaskGroup` poll + commandes, arrêt propre publiant `offline`).
+  wiring (`TaskGroup` poll + commandes, arrêt propre publiant `offline`),
+  plusieurs équipements sur un même bus (`BUS`, verrou partagé, un client
+  MQTT par équipement).
 
 Écritures groupées : la fonction **0x10** est utilisée pour tout bloc, avec
 read-modify-write (`preserve`). Une commande peut piloter **un seul** champ
@@ -202,7 +288,7 @@ read-modify-write (`preserve`). Une commande peut piloter **un seul** champ
 trame 0x10 (charge utile JSON `{"active": -2000, "reactive": 0}`), chaque champ
 identifié par sa `key` dans `layout`, validé (min/max) et clampé indépendamment.
 
-Qualité : `ruff` clean, `mypy --strict` clean, `pytest` 105 tests verts (aucun
+Qualité : `ruff` clean, `mypy --strict` clean, `pytest` 154 tests verts (aucun
 matériel/broker requis).
 
 

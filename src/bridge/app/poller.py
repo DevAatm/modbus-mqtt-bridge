@@ -4,6 +4,13 @@ Chaque bloc a son `interval`. Entre deux échéances, `Clock.sleep` (pas de
 boucle serrée). Après chaque lecture réussie, on met à jour l'horodatage de
 santé (healthcheck par fichier, pas de serveur HTTP). Une absence de réponse
 n'est jamais publiée comme une valeur nulle.
+
+Plusieurs équipements sur un même bus : un poller par équipement, mais un
+seul fichier de santé par process, que tous rafraîchissent. Il reste donc
+frais tant qu'AU MOINS UN équipement répond. Choix délibéré : la perte d'un
+seul compteur est signalée par SON availability MQTT (`offline`), pas par un
+redémarrage du conteneur qui interromprait aussi les équipements sains. Le
+healthcheck ne détecte que la perte du bus entier (câble, adaptateur, lien).
 """
 
 from __future__ import annotations
@@ -120,7 +127,11 @@ class Poller:
             await self._publisher.publish_availability(True)
 
     def _touch_health(self) -> None:
-        """Écrit un horodatage; testé par bridge.healthcheck."""
+        """Écrit un horodatage; testé par bridge.healthcheck.
+
+        Fichier partagé par tous les pollers du process : voir le docstring du
+        module pour la sémantique en mode bus.
+        """
         try:
             self._health_file.write_text(str(self._clock.monotonic()), encoding="ascii")
         except OSError as exc:

@@ -3,6 +3,10 @@
 Le profil décrit l'ÉQUIPEMENT, l'environnement décrit le DÉPLOIEMENT. Le lien
 physique (port série ou host:port TCP) appartient donc ici : le même profil
 sert un onduleur câblé en RS485 et le même modèle atteint via une passerelle.
+
+Les équipements à interroger viennent soit d'un profil seul (`PROFILE`, mode
+historique : nom et adresse du profil), soit d'un fichier de bus (`BUS` :
+plusieurs équipements sur le même lien). Exclusifs l'un de l'autre.
 """
 
 from __future__ import annotations
@@ -56,9 +60,26 @@ ModbusEndpoint = SerialEndpoint | TcpEndpoint
 
 
 @dataclass(frozen=True, slots=True)
+class ProfileFile:
+    """`PROFILE` : un seul équipement, tel que décrit par son profil."""
+
+    path: str
+
+
+@dataclass(frozen=True, slots=True)
+class BusFile:
+    """`BUS` : plusieurs équipements sur le même lien (fichier de bus)."""
+
+    path: str
+
+
+DeviceSource = ProfileFile | BusFile
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     endpoint: ModbusEndpoint
-    profile_path: str
+    devices: DeviceSource
     read_only: bool
     health_file: str
     mqtt_host: str
@@ -71,7 +92,7 @@ class Config:
     def from_env() -> Config:
         return Config(
             endpoint=_endpoint_from_env(),
-            profile_path=_require("PROFILE"),
+            devices=_devices_from_env(),
             # Sécurité : read_only actif tant que non explicitement désactivé.
             read_only=os.environ.get("READ_ONLY", "true").lower() != "false",
             health_file=os.environ.get("HEALTH_FILE", "/tmp/bridge-health"),
@@ -81,6 +102,26 @@ class Config:
             mqtt_password=os.environ.get("MQTT_PASSWORD"),
             mqtt_prefix=os.environ.get("MQTT_PREFIX", "modbus"),
         )
+
+
+def _devices_from_env() -> DeviceSource:
+    """`BUS` ou `PROFILE`, exactement l'un des deux. Vide = absent."""
+    bus = os.environ.get("BUS", "").strip()
+    profile = os.environ.get("PROFILE", "").strip()
+    if bus and profile:
+        raise ConfigError(
+            "BUS et PROFILE sont exclusifs : PROFILE pour un équipement seul, "
+            "BUS pour plusieurs équipements sur le même lien (les profils sont "
+            "alors référencés par le fichier de bus)"
+        )
+    if bus:
+        return BusFile(bus)
+    if profile:
+        return ProfileFile(profile)
+    raise ConfigError(
+        "variable d'environnement requise manquante: PROFILE (un équipement) "
+        "ou BUS (plusieurs équipements sur le même lien)"
+    )
 
 
 def _endpoint_from_env() -> ModbusEndpoint:

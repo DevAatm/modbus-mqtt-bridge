@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 
 from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 from pymodbus.framer import FramerRTU, FramerSocket
 
 from bridge.adapters.modbus import ModbusBus, PymodbusTransport
-from bridge.app.config import Config, ModbusEndpoint, SerialEndpoint, TcpEndpoint
-from bridge.app.wiring import _open_bus, _parse_command
+from bridge.app.config import (
+    BusFile,
+    Config,
+    ModbusEndpoint,
+    ProfileFile,
+    SerialEndpoint,
+    TcpEndpoint,
+)
+from bridge.app.wiring import _load_devices, _open_bus, _parse_command, _transports
 from bridge.domain.profile import BlockSpec, DeviceProfile, PointSpec, SerialSettings
 from bridge.domain.values import RegisterAddress, SlaveId
 
@@ -62,7 +71,7 @@ def _profile() -> DeviceProfile:
 def _config(endpoint: ModbusEndpoint) -> Config:
     return Config(
         endpoint=endpoint,
-        profile_path="p.yaml",
+        devices=ProfileFile("p.yaml"),
         read_only=True,
         health_file="h",
         mqtt_host="mosquitto",
@@ -111,3 +120,43 @@ async def test_bus_views_share_one_client_with_their_own_slave_id() -> None:
     assert meter_1._client is meter_2._client is bus._client
     assert (meter_1.slave_id, meter_2.slave_id) == (SlaveId(1), SlaveId(2))
     assert str(meter_1) == str(bus) == "série /dev/rs485"
+
+
+# --- source des équipements -------------------------------------------------
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _views(config: Config) -> list[tuple[str, PymodbusTransport]]:
+    devices = _load_devices(config.devices)
+    bus = _open_bus(config, devices.devices[0].serial)
+    return [(p.name, t) for p, t in _transports(devices, bus)]
+
+
+async def test_bus_file_gives_one_view_per_meter_on_a_single_client(tmp_path: Path) -> None:
+    sdm120 = (ROOT / "profiles" / "eastron-sdm120.yaml").as_posix()
+    bus_file = tmp_path / "bus.yaml"
+    bus_file.write_text(
+        "devices:\n"
+        f"  - {{name: sdm120-pac,    profile: '{sdm120}', slave_id: 1}}\n"
+        f"  - {{name: sdm120-ballon, profile: '{sdm120}', slave_id: 2}}\n",
+        encoding="utf-8",
+    )
+    config = replace(_config(SerialEndpoint("/dev/rs485")), devices=BusFile(str(bus_file)))
+
+    (pac_name, pac), (ballon_name, ballon) = _views(config)
+
+    assert (pac_name, ballon_name) == ("sdm120-pac", "sdm120-ballon")
+    assert (pac.slave_id, ballon.slave_id) == (SlaveId(1), SlaveId(2))
+    assert pac._client is ballon._client  # une seule connexion au bus
+    assert pac._client.comm_params.baudrate == 2400  # réglages du profil partagé
+
+
+async def test_profile_mode_is_a_single_device_with_the_profile_identity() -> None:
+    sofar = str(ROOT / "profiles" / "sofar-esi-5k-s1.yaml")
+    config = replace(_config(SerialEndpoint("/dev/rs485")), devices=ProfileFile(sofar))
+
+    ((name, transport),) = _views(config)
+
+    assert name == "sofar-esi-5k-s1"
+    assert transport.slave_id == SlaveId(1)

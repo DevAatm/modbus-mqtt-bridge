@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from bridge.app.config import Config, ConfigError, SerialEndpoint, TcpEndpoint
+from bridge.app.config import (
+    BusFile,
+    Config,
+    ConfigError,
+    ProfileFile,
+    SerialEndpoint,
+    TcpEndpoint,
+)
 
 _BASE = {"PROFILE": "/etc/bridge/profile.yaml", "MQTT_HOST": "mosquitto"}
 
@@ -19,6 +26,7 @@ def _env(monkeypatch: pytest.MonkeyPatch, **extra: str) -> None:
         "MODBUS_TIMEOUT",
         "MODBUS_LOGGER_SERIAL",
         "READ_ONLY",
+        "BUS",
     ):
         monkeypatch.delenv(name, raising=False)
     for key, value in {**_BASE, **extra}.items():
@@ -118,4 +126,33 @@ def test_invalid_configuration_fails_loudly(
 ) -> None:
     _env(monkeypatch, **extra)
     with pytest.raises(ConfigError):
+        Config.from_env()
+
+
+# --- source des équipements : PROFILE (historique) ou BUS -------------------
+
+
+def test_profile_alone_is_the_historical_single_device_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _env(monkeypatch, SERIAL_PORT="/dev/rs485")
+    assert Config.from_env().devices == ProfileFile("/etc/bridge/profile.yaml")
+
+
+def test_bus_alone_selects_the_bus_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    _env(monkeypatch, SERIAL_PORT="/dev/rs485", BUS="/etc/bridge/bus.yaml")
+    monkeypatch.delenv("PROFILE")
+    assert Config.from_env().devices == BusFile("/etc/bridge/bus.yaml")
+
+
+def test_bus_and_profile_together_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    _env(monkeypatch, SERIAL_PORT="/dev/rs485", BUS="/etc/bridge/bus.yaml")
+    with pytest.raises(ConfigError, match="exclusifs"):
+        Config.from_env()
+
+
+def test_neither_bus_nor_profile_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    _env(monkeypatch, SERIAL_PORT="/dev/rs485")
+    monkeypatch.delenv("PROFILE")
+    with pytest.raises(ConfigError, match=r"PROFILE.*BUS"):
         Config.from_env()

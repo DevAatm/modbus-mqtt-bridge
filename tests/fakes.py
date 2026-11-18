@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from collections.abc import AsyncIterator
 
@@ -12,14 +13,40 @@ from bridge.ports.publisher import IncomingCommand
 from bridge.ports.transport import ModbusError
 
 
+class FakeLine:
+    """Ligne physique simulée, partageable entre plusieurs `FakeTransport`.
+
+    Détecte les accès concurrents : chaque trame « entre » sur la ligne, cède
+    la main à la boucle (une vraie trame prend du temps), puis « sort ». Deux
+    trames en vol en même temps = deux maîtres sur un bus half-duplex.
+    """
+
+    def __init__(self) -> None:
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.log: list[tuple[str, str]] = []  # (nom du transport, opération)
+
+    async def transmit(self, who: str, op: str) -> None:
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        self.log.append((who, op))
+        try:
+            await asyncio.sleep(0)
+        finally:
+            self.in_flight -= 1
+
+
 class FakeTransport:
     """Transport scriptable : réponses, exceptions Modbus, timeouts.
 
     Journalise l'ordre des opérations (`ops`) pour vérifier la sérialisation
-    lecture/écriture.
+    lecture/écriture. Plusieurs transports peuvent partager une `FakeLine`
+    pour simuler plusieurs esclaves sur un même bus.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, line: FakeLine | None = None, name: str = "dev") -> None:
+        self.line = line if line is not None else FakeLine()
+        self.name = name
         self._reads: deque[Result[tuple[int, ...], ModbusError]] = deque()
         self.writes: list[tuple[RegisterAddress, tuple[int, ...]]] = []
         self.ops: list[str] = []
@@ -36,6 +63,7 @@ class FakeTransport:
     ) -> Result[tuple[int, ...], ModbusError]:
         self.ops.append("read")
         self.read_tables.append(table)
+        await self.line.transmit(self.name, "read")
         if self._reads:
             return self._reads.popleft()
         return Ok(tuple(0 for _ in range(count)))
@@ -43,6 +71,7 @@ class FakeTransport:
     async def write_single(self, address: RegisterAddress, value: int) -> Result[None, ModbusError]:
         self.ops.append("write")
         self.writes.append((address, (value,)))
+        await self.line.transmit(self.name, "write_single")
         return Ok(None)
 
     async def write_block(
@@ -50,6 +79,7 @@ class FakeTransport:
     ) -> Result[None, ModbusError]:
         self.ops.append("write")
         self.writes.append((address, values))
+        await self.line.transmit(self.name, "write_block")
         return Ok(None)
 
 

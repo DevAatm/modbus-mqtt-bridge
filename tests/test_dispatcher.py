@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from bridge.app.dispatcher import BusDispatcher
 from bridge.domain.commands import PlannedWrite
-from bridge.domain.profile import LayoutSpec, WriteMode, WriteSpec
+from bridge.domain.profile import LayoutSpec, RegisterTable, WriteMode, WriteSpec
 from bridge.domain.values import RegisterAddress
-from tests.fakes import FakePublisher, FakeTransport
+from tests.fakes import FakeLine, FakePublisher, FakeTransport
 
 pytestmark = pytest.mark.asyncio
 
@@ -120,3 +122,52 @@ async def test_out_of_range_encoding_is_reported_failed() -> None:
     assert transport.writes == []
     assert publisher.results[0][0] == "power_setpoint"
     assert publisher.results[0][1].startswith("failed")
+
+
+# --- plusieurs équipements sur un même bus ----------------------------------
+# Un dispatcher par équipement, un verrou partagé : jamais deux trames en vol.
+
+
+async def _device_activity(dispatcher: BusDispatcher, rounds: int) -> None:
+    """Imite un poller : lectures, puis écritures intercalées entre deux cycles."""
+    for _ in range(rounds):
+        await dispatcher.read_registers(RegisterTable.INPUT, RegisterAddress(0), 2)
+        dispatcher.enqueue_write(PlannedWrite(_block_preserve(), {"power_setpoint": 100}))
+        dispatcher.enqueue_write(PlannedWrite(_single(), {"storage_mode": 1}))
+        await dispatcher.drain_writes()
+
+
+async def _run_two_devices(lock_a: asyncio.Lock, lock_b: asyncio.Lock) -> FakeLine:
+    line = FakeLine()
+    a = BusDispatcher(FakeTransport(line, "a"), FakePublisher(), lock_a)
+    b = BusDispatcher(FakeTransport(line, "b"), FakePublisher(), lock_b)
+    await asyncio.gather(_device_activity(a, 5), _device_activity(b, 5))
+    return line
+
+
+async def test_shared_lock_never_lets_two_devices_talk_at_once() -> None:
+    lock = asyncio.Lock()
+    line = await _run_two_devices(lock, lock)
+
+    assert line.max_in_flight == 1
+    # 2 équipements x 5 cycles x (lecture, relecture preserve, bloc, simple)
+    assert len(line.log) == 2 * 5 * 4
+
+
+async def test_preserve_read_and_write_are_not_split_by_another_device() -> None:
+    lock = asyncio.Lock()
+    line = await _run_two_devices(lock, lock)
+
+    # Chaque écriture de bloc preserve suit immédiatement SA relecture : aucun
+    # autre esclave ne s'est intercalé entre les deux trames.
+    for i, (who, op) in enumerate(line.log):
+        if op == "write_block":
+            assert line.log[i - 1] == (who, "read")
+
+
+async def test_private_locks_do_overlap_witness() -> None:
+    # Témoin : sans verrou partagé, le détecteur DOIT voir le chevauchement.
+    # Garantit que les tests précédents sont capables d'échouer.
+    line = await _run_two_devices(asyncio.Lock(), asyncio.Lock())
+
+    assert line.max_in_flight == 2

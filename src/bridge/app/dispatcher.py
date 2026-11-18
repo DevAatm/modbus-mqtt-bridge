@@ -4,6 +4,13 @@ INVARIANT (cf. CLAUDE.md) : un seul thread, une seule socket parlent au bus.
 Les écritures s'intercalent ENTRE deux cycles de poll, jamais pendant. Ce
 dispatcher est le point unique où lectures et écritures sont ordonnancées ;
 un verrou garantit qu'aucune écriture ne part au milieu d'une lecture.
+
+Plusieurs équipements sur un même bus : un dispatcher PAR équipement (file
+d'écritures et acquittements propres), mais tous les dispatchers d'un même
+lien partagent LE MÊME verrou, injecté par le composition root. C'est ce
+verrou, et lui seul, qui préserve l'invariant mono-maître : une seule trame
+à la fois sur la ligne, tous esclaves confondus. `asyncio.Lock` sert les
+demandes dans l'ordre d'arrivée : aucun équipement ne monopolise le bus.
 """
 
 from __future__ import annotations
@@ -23,12 +30,22 @@ _log = logging.getLogger(__name__)
 
 
 class BusDispatcher:
-    """Propriétaire logique du transport. Rien d'autre ne l'appelle en direct."""
+    """Propriétaire logique du transport. Rien d'autre ne l'appelle en direct.
 
-    def __init__(self, transport: ModbusTransport, publisher: MessagePublisher) -> None:
+    `lock` : verrou du BUS, à partager entre tous les dispatchers dont les
+    transports parlent au même lien physique. Absent = verrou privé, ce qui
+    n'est correct que pour un équipement seul sur son lien.
+    """
+
+    def __init__(
+        self,
+        transport: ModbusTransport,
+        publisher: MessagePublisher,
+        lock: asyncio.Lock | None = None,
+    ) -> None:
         self._transport = transport
         self._publisher = publisher
-        self._lock = asyncio.Lock()
+        self._lock = lock if lock is not None else asyncio.Lock()
         self._pending: asyncio.Queue[PlannedWrite] = asyncio.Queue()
 
     async def read_registers(
@@ -46,7 +63,9 @@ class BusDispatcher:
         """Exécute les écritures en attente, une par une, sous verrou.
 
         Appelée par le poller entre deux cycles. Chaque écriture est acquittée
-        (accepté / échoué + motif) via le publisher.
+        (accepté / échoué + motif) via le publisher. Une écriture `preserve`
+        (relecture + réécriture) tient le verrou d'un bout à l'autre : aucun
+        autre esclave du bus ne peut s'intercaler entre les deux trames.
         """
         while not self._pending.empty():
             planned = self._pending.get_nowait()
